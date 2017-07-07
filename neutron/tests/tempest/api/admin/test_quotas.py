@@ -19,13 +19,20 @@ from tempest.lib import exceptions as lib_exc
 from tempest import test
 
 from neutron.tests.tempest.api import base
+from neutron.tests.tempest import config
+
+CONF = config.CONF
 
 
 class QuotasTestBase(base.BaseAdminNetworkTest):
 
+    required_extensions = ['quotas']
+
     @classmethod
-    @test.requires_ext(extension="quotas", service="network")
     def resource_setup(cls):
+        if not CONF.identity_feature_enabled.api_v2_admin:
+            # TODO(ihrachys) adopt to v3
+            raise cls.skipException('Identity v2 admin not available')
         super(QuotasTestBase, cls).resource_setup()
 
     def _create_tenant(self):

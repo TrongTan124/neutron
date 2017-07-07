@@ -50,6 +50,10 @@ class SharedNetworksTest(base.BaseAdminNetworkTest):
         self.assertNotEmpty(items)
         self.assertTrue(all(n['shared'] == shared for n in items))
 
+    def _list_subnets_ids(self, client, shared):
+        body = client.list_subnets(shared=shared)
+        return [subnet['id'] for subnet in body['subnets']]
+
     @decorators.idempotent_id('6661d219-b96d-4597-ad10-51672353421a')
     def test_filtering_shared_subnets(self):
         # shared subnets need to be tested because their shared status isn't
@@ -59,7 +63,8 @@ class SharedNetworksTest(base.BaseAdminNetworkTest):
         priv = self.create_subnet(reg, client=self.client)
         shared = self.create_subnet(self.shared_network,
                                     client=self.admin_client)
-        self.assertIn(shared, self.client.list_subnets(shared=True)['subnets'])
+        self.assertIn(shared['id'],
+                      self._list_subnets_ids(self.client, shared=True))
         self.assertIn(shared,
             self.admin_client.list_subnets(shared=True)['subnets'])
         self.assertNotIn(priv,
@@ -67,8 +72,8 @@ class SharedNetworksTest(base.BaseAdminNetworkTest):
         self.assertNotIn(priv,
             self.admin_client.list_subnets(shared=True)['subnets'])
         self.assertIn(priv, self.client.list_subnets(shared=False)['subnets'])
-        self.assertIn(priv,
-            self.admin_client.list_subnets(shared=False)['subnets'])
+        self.assertIn(priv['id'],
+                      self._list_subnets_ids(self.admin_client, shared=False))
         self.assertNotIn(shared,
             self.client.list_subnets(shared=False)['subnets'])
         self.assertNotIn(shared,
@@ -143,11 +148,7 @@ class SharedNetworksTest(base.BaseAdminNetworkTest):
 
 class AllowedAddressPairSharedNetworkTest(base.BaseAdminNetworkTest):
     allowed_address_pairs = [{'ip_address': '1.1.1.1'}]
-
-    @classmethod
-    @test.requires_ext(extension="allowed-address-pairs", service="network")
-    def skip_checks(cls):
-        super(AllowedAddressPairSharedNetworkTest, cls).skip_checks()
+    required_extensions = ['allowed-address-pairs']
 
     @classmethod
     def resource_setup(cls):
@@ -173,12 +174,12 @@ class RBACSharedNetworksTest(base.BaseAdminNetworkTest):
 
     force_tenant_isolation = True
     credentials = ['primary', 'alt', 'admin']
+    required_extensions = ['rbac-policies']
 
     @classmethod
-    @test.requires_ext(extension="rbac-policies", service="network")
     def resource_setup(cls):
         super(RBACSharedNetworksTest, cls).resource_setup()
-        cls.client2 = cls.alt_manager.network_client
+        cls.client2 = cls.os_alt.network_client
 
     def _make_admin_net_and_subnet_shared_to_tenant_id(self, tenant_id):
         net = self.admin_client.create_network(

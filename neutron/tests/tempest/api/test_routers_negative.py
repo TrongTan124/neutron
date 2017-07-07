@@ -24,10 +24,7 @@ from neutron.tests.tempest.api import base_routers as base
 
 class RoutersNegativeTestBase(base.BaseRouterTest):
 
-    @classmethod
-    @test.requires_ext(extension="router", service="network")
-    def skip_checks(cls):
-        super(RoutersNegativeTestBase, cls).skip_checks()
+    required_extensions = ['router']
 
     @classmethod
     def resource_setup(cls):
@@ -57,7 +54,7 @@ class RoutersNegativePolicyTest(RoutersNegativeTestBase):
     @test.attr(type='negative')
     @decorators.idempotent_id('159f576d-a423-46b5-b501-622694c02f6b')
     def test_add_interface_wrong_tenant(self):
-        client2 = self.alt_manager.network_client
+        client2 = self.os_alt.network_client
         network = client2.create_network()['network']
         self.addCleanup(client2.delete_network, network['id'])
         subnet = self.create_subnet(network, client=client2)
@@ -74,10 +71,7 @@ class RoutersNegativePolicyTest(RoutersNegativeTestBase):
 
 class DvrRoutersNegativeTest(RoutersNegativeTestBase):
 
-    @classmethod
-    @test.requires_ext(extension="dvr", service="network")
-    def skip_checks(cls):
-        super(DvrRoutersNegativeTest, cls).skip_checks()
+    required_extensions = ['dvr']
 
     @test.attr(type='negative')
     @decorators.idempotent_id('4990b055-8fc7-48ab-bba7-aa28beaad0b9')
@@ -85,3 +79,15 @@ class DvrRoutersNegativeTest(RoutersNegativeTestBase):
         with testtools.ExpectedException(lib_exc.Forbidden):
             self.create_router(
                 data_utils.rand_name('router'), distributed=True)
+
+
+class HaRoutersNegativeTest(RoutersNegativeTestBase):
+
+    required_extensions = ['l3-ha']
+
+    @test.attr(type='negative')
+    @decorators.idempotent_id('821b85b9-9c51-40f3-831f-bf223a7e0084')
+    def test_router_create_tenant_ha_returns_forbidden(self):
+        with testtools.ExpectedException(lib_exc.Forbidden):
+            self.create_router(
+                data_utils.rand_name('router'), ha=True)

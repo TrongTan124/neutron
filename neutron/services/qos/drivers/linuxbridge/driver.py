@@ -29,7 +29,9 @@ SUPPORTED_RULES = {
         qos_consts.MAX_KBPS: {
             'type:range': [0, constants.DB_INTEGER_MAX_VALUE]},
         qos_consts.MAX_BURST: {
-            'type:range': [0, constants.DB_INTEGER_MAX_VALUE]}
+            'type:range': [0, constants.DB_INTEGER_MAX_VALUE]},
+        qos_consts.DIRECTION: {
+            'type:values': constants.VALID_DIRECTIONS}
     },
     qos_consts.RULE_TYPE_DSCP_MARKING: {
         qos_consts.DSCP_MARK: {'type:values': constants.VALID_DSCP_MARKS}
@@ -43,7 +45,8 @@ class LinuxBridgeDriver(base.DriverBase):
     def create():
         return LinuxBridgeDriver(
             name='linuxbridge',
-            vif_types=[portbindings.VIF_TYPE_BRIDGE],
+            vif_types=[portbindings.VIF_TYPE_BRIDGE,
+                       portbindings.VIF_TYPE_TAP],
             vnic_types=[portbindings.VNIC_NORMAL],
             supported_rules=SUPPORTED_RULES,
             requires_rpc_notifications=True)

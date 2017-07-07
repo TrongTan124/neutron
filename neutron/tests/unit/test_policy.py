@@ -19,6 +19,7 @@ import mock
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib import exceptions
+from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from oslo_config import cfg
 from oslo_db import exception as db_exc
@@ -222,7 +223,7 @@ class NeutronPolicyTestCase(base.BaseTestCase):
         self.context = context.Context('fake', 'fake', roles=['user'])
         plugin_klass = importutils.import_class(
             "neutron.db.db_base_plugin_v2.NeutronDbPluginV2")
-        directory.add_plugin(constants.CORE, plugin_klass())
+        directory.add_plugin(plugin_constants.CORE, plugin_klass())
 
     def _set_rules(self, **kwargs):
         rules_dict = {
@@ -427,6 +428,12 @@ class NeutronPolicyTestCase(base.BaseTestCase):
 
     def test_build_match_rule_normal_pluralized_when_create(self):
         action = "create_" + FAKE_RESOURCE_NAME
+        target = {}
+        result = policy._build_match_rule(action, target, None)
+        self.assertEqual("rule:" + action, str(result))
+
+    def test_build_match_rule_normal_pluralized_when_update(self):
+        action = "update_" + FAKE_RESOURCE_NAME
         target = {}
         result = policy._build_match_rule(action, target, None)
         self.assertEqual("rule:" + action, str(result))

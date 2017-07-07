@@ -268,6 +268,8 @@ class RootHelperProcess(subprocess.Popen):
     def __init__(self, cmd, *args, **kwargs):
         for arg in ('stdin', 'stdout', 'stderr'):
             kwargs.setdefault(arg, subprocess.PIPE)
+        kwargs.setdefault('universal_newlines', True)
+
         self.namespace = kwargs.pop('namespace', None)
         self.cmd = cmd
         if self.namespace is not None:
@@ -923,12 +925,12 @@ class VethBridge(object):
 
     def __init__(self, ports):
         self.ports = ports
-        self.unallocated_ports = set(self.ports)
+        self.unallocated_ports = list(self.ports)
 
     def allocate_port(self):
         try:
             return self.unallocated_ports.pop()
-        except KeyError:
+        except IndexError:
             tools.fail('All FakeBridge ports (%s) are already allocated.' %
                        len(self.ports))
 

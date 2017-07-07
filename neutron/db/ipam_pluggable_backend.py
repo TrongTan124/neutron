@@ -32,6 +32,7 @@ from neutron.db import ipam_backend_mixin
 from neutron.db import models_v2
 from neutron.ipam import driver
 from neutron.ipam import exceptions as ipam_exc
+from neutron.objects import subnet as obj_subnet
 
 
 LOG = logging.getLogger(__name__)
@@ -199,15 +200,16 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         a subnet_id then allocate an IP address accordingly.
         """
         p = port['port']
+        fixed_configured = p['fixed_ips'] is not constants.ATTR_NOT_SPECIFIED
         subnets = self._ipam_get_subnets(context,
                                          network_id=p['network_id'],
                                          host=p.get(portbindings.HOST_ID),
-                                         service_type=p.get('device_owner'))
+                                         service_type=p.get('device_owner'),
+                                         fixed_configured=fixed_configured)
 
         v4, v6_stateful, v6_stateless = self._classify_subnets(
             context, subnets)
 
-        fixed_configured = p['fixed_ips'] is not constants.ATTR_NOT_SPECIFIED
         if fixed_configured:
             ips = self._test_fixed_ips_for_port(context,
                                                 p["network_id"],
@@ -327,13 +329,31 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         for pool in allocation_pools:
             first_ip = str(netaddr.IPAddress(pool.first, pool.version))
             last_ip = str(netaddr.IPAddress(pool.last, pool.version))
-            ip_pool = models_v2.IPAllocationPool(subnet=subnet,
-                                                 first_ip=first_ip,
-                                                 last_ip=last_ip)
-            context.session.add(ip_pool)
+            obj_subnet.IPAllocationPool(
+                context, subnet_id=subnet['id'], start=first_ip,
+                end=last_ip).create()
 
     def update_port_with_ips(self, context, host, db_port, new_port, new_mac):
         changes = self.Changes(add=[], original=[], remove=[])
+
+        auto_assign_subnets = []
+        if new_mac:
+            original = self._make_port_dict(db_port, process_extensions=False)
+            if original.get('mac_address') != new_mac:
+                original_ips = original.get('fixed_ips', [])
+                new_ips = new_port.setdefault('fixed_ips', original_ips)
+                new_ips_subnets = [new_ip['subnet_id'] for new_ip in new_ips]
+                for orig_ip in original_ips:
+                    if ipv6_utils.is_eui64_address(orig_ip.get('ip_address')):
+                        subnet_to_delete = {}
+                        subnet_to_delete['subnet_id'] = orig_ip['subnet_id']
+                        subnet_to_delete['delete_subnet'] = True
+                        auto_assign_subnets.append(subnet_to_delete)
+                        try:
+                            i = new_ips_subnets.index(orig_ip['subnet_id'])
+                            new_ips[i] = subnet_to_delete
+                        except ValueError:
+                            new_ips.append(subnet_to_delete)
 
         if 'fixed_ips' in new_port:
             original = self._make_port_dict(db_port,
@@ -362,6 +382,14 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
             self._update_db_port(context, db_port, new_port, network_id,
                                  new_mac)
             getattr(db_port, 'fixed_ips')  # refresh relationship before return
+
+            if auto_assign_subnets:
+                port_copy = copy.deepcopy(original)
+                port_copy.update(new_port)
+                port_copy['fixed_ips'] = auto_assign_subnets
+                self.allocate_ips_for_port_and_store(context,
+                            {'port': port_copy}, port_copy['id'])
+
         except Exception:
             with excutils.save_and_reraise_exception():
                 if 'fixed_ips' in new_port:
@@ -448,12 +476,12 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                 LOG.debug("Requesting with IP request: %s port: %s ip: %s "
                           "for subnet %s and ipam_subnet %s", ip_request,
                           port, ip, subnet, ipam_subnet)
-                ip_address = ipam_subnet.allocate(ip_request)
-                allocated = models_v2.IPAllocation(network_id=network_id,
-                                                   port_id=port['id'],
-                                                   ip_address=ip_address,
-                                                   subnet_id=subnet['id'])
                 try:
+                    ip_address = ipam_subnet.allocate(ip_request)
+                    allocated = models_v2.IPAllocation(network_id=network_id,
+                                                       port_id=port['id'],
+                                                       ip_address=ip_address,
+                                                       subnet_id=subnet['id'])
                     # Do the insertion of each IP allocation entry within
                     # the context of a nested transaction, so that the entry
                     # is rolled back independently of other entries whenever
@@ -471,6 +499,10 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                     except Exception:
                         LOG.debug("Reverting IP allocation failed for %s",
                                   ip_address)
+                except ipam_exc.IpAddressAlreadyAllocated:
+                    LOG.debug("Port %s got IPv6 auto-address in a concurrent "
+                              "create or update port request. Ignoring.",
+                              port['id'])
             return updated_ports
 
     def allocate_subnet(self, context, network, subnet, subnetpool_id):

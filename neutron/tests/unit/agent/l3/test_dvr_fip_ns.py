@@ -13,6 +13,7 @@
 #    under the License.
 
 import copy
+
 import mock
 from oslo_config import cfg
 from oslo_utils import uuidutils
@@ -120,12 +121,10 @@ class TestDvrFipNs(base.BaseTestCase):
         expected = [
             mock.call(self.fip_ns.get_name(),
                       interface_name,
-                      agent_gw_port['fixed_ips'][0]['ip_address'],
-                      mock.ANY),
+                      agent_gw_port['fixed_ips'][0]['ip_address']),
             mock.call(self.fip_ns.get_name(),
                       interface_name,
-                      agent_gw_port['fixed_ips'][1]['ip_address'],
-                      mock.ANY)]
+                      agent_gw_port['fixed_ips'][1]['ip_address'])]
         send_adv_notif.assert_has_calls(expected)
         self.assertTrue(def_gw.called)
 

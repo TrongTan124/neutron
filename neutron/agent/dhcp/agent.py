@@ -109,7 +109,8 @@ class DhcpAgent(manager.Manager):
                 self.conf
             )
             for net_id in existing_networks:
-                net = dhcp.NetModel({"id": net_id, "subnets": [], "ports": []})
+                net = dhcp.NetModel({"id": net_id, "subnets": [],
+                                     "non_local_subnets": [], "ports": []})
                 self.cache.put(net)
         except NotImplementedError:
             # just go ahead with an empty networks cache
@@ -227,14 +228,7 @@ class DhcpAgent(manager.Manager):
                 except oslo_messaging.MessagingTimeout:
                     LOG.error(_LE("Timeout notifying server of ports ready. "
                                   "Retrying..."))
-                except Exception as e:
-                    if (isinstance(e, oslo_messaging.RemoteError)
-                            and e.exc_type == 'NoSuchMethod'):
-                        LOG.info(_LI("Server does not support port ready "
-                                     "notifications. Waiting for 5 minutes "
-                                     "before retrying."))
-                        eventlet.sleep(300)
-                        continue
+                except Exception:
                     LOG.exception(_LE("Failure notifying DHCP server of "
                                       "ready DHCP ports. Will retry on next "
                                       "iteration."))
@@ -341,8 +335,12 @@ class DhcpAgent(manager.Manager):
             return
         # NOTE(kevinbenton): we don't exclude dhcp disabled subnets because
         # they still change the indexes used for tags
-        old_cidrs = [s.cidr for s in old_network.subnets]
-        new_cidrs = [s.cidr for s in network.subnets]
+        old_non_local_subnets = getattr(old_network, 'non_local_subnets', [])
+        new_non_local_subnets = getattr(network, 'non_local_subnets', [])
+        old_cidrs = [s.cidr for s in (old_network.subnets +
+                                      old_non_local_subnets)]
+        new_cidrs = [s.cidr for s in (network.subnets +
+                                      new_non_local_subnets)]
         if old_cidrs == new_cidrs:
             self.call_driver('reload_allocations', network)
             self.cache.put(network)
@@ -523,7 +521,7 @@ class DhcpAgent(manager.Manager):
             uuid = network.id
             is_router_id = False
         metadata_driver.MetadataDriver.destroy_monitored_metadata_proxy(
-            self._process_monitor, uuid, self.conf)
+            self._process_monitor, uuid, self.conf, network.namespace)
         if is_router_id:
             del self._metadata_routers[network.id]
 
@@ -646,7 +644,8 @@ class NetworkCache(object):
 
         self.cache[network.id] = network
 
-        for subnet in network.subnets:
+        non_local_subnets = getattr(network, 'non_local_subnets', [])
+        for subnet in (network.subnets + non_local_subnets):
             self.subnet_lookup[subnet.id] = network.id
 
         for port in network.ports:
@@ -655,7 +654,8 @@ class NetworkCache(object):
     def remove(self, network):
         del self.cache[network.id]
 
-        for subnet in network.subnets:
+        non_local_subnets = getattr(network, 'non_local_subnets', [])
+        for subnet in (network.subnets + non_local_subnets):
             del self.subnet_lookup[subnet.id]
 
         for port in network.ports:
@@ -695,7 +695,9 @@ class NetworkCache(object):
         num_ports = 0
         for net_id in net_ids:
             network = self.get_network_by_id(net_id)
+            non_local_subnets = getattr(network, 'non_local_subnets', [])
             num_subnets += len(network.subnets)
+            num_subnets += len(non_local_subnets)
             num_ports += len(network.ports)
         return {'networks': num_nets,
                 'subnets': num_subnets,
@@ -712,7 +714,6 @@ class DhcpAgentWithStateReport(DhcpAgent):
             'availability_zone': self.conf.AGENT.availability_zone,
             'topic': topics.DHCP_AGENT,
             'configurations': {
-                'notifies_port_ready': True,
                 'dhcp_driver': self.conf.dhcp_driver,
                 'dhcp_lease_duration': self.conf.dhcp_lease_duration,
                 'log_agent_heartbeats': self.conf.AGENT.log_agent_heartbeats},

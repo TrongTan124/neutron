@@ -14,6 +14,7 @@
 #    under the License.
 
 import errno
+import socket
 
 import mock
 import netaddr
@@ -21,7 +22,6 @@ from neutron_lib import exceptions
 import pyroute2
 from pyroute2.netlink.rtnl import ndmsg
 from pyroute2 import NetlinkError
-import socket
 import testtools
 
 from neutron.agent.common import utils  # noqa
@@ -1666,18 +1666,42 @@ class TestArpPing(TestIPCmdBase):
                                       ARPING_COUNT)
 
         self.assertTrue(spawn_n.called)
-        mIPWrapper.assert_called_once_with(namespace=mock.sentinel.ns_name)
+        mIPWrapper.assert_has_calls([
+            mock.call(namespace=mock.sentinel.ns_name),
+            mock.call().netns.execute(mock.ANY, extra_ok_codes=mock.ANY)
+        ] * ARPING_COUNT)
 
         ip_wrapper = mIPWrapper(namespace=mock.sentinel.ns_name)
 
         # Just test that arping is called with the right arguments
-        arping_cmd = ['arping', '-A',
-                      '-I', mock.sentinel.iface_name,
-                      '-c', ARPING_COUNT,
-                      '-w', mock.ANY,
-                      address]
-        ip_wrapper.netns.execute.assert_any_call(arping_cmd,
-                                                 extra_ok_codes=[1])
+        for arg in ('-A', '-U'):
+            arping_cmd = ['arping', arg,
+                          '-I', mock.sentinel.iface_name,
+                          '-c', 1,
+                          '-w', mock.ANY,
+                          address]
+            ip_wrapper.netns.execute.assert_any_call(arping_cmd,
+                                                     extra_ok_codes=[1])
+
+    @mock.patch.object(ip_lib, 'IPWrapper')
+    @mock.patch('eventlet.spawn_n')
+    def test_send_ipv4_addr_adv_notif_nodev(self, spawn_n, mIPWrapper):
+        spawn_n.side_effect = lambda f: f()
+        ip_wrapper = mIPWrapper(namespace=mock.sentinel.ns_name)
+        ip_wrapper.netns.execute.side_effect = RuntimeError
+        ARPING_COUNT = 3
+        address = '20.0.0.1'
+        with mock.patch.object(ip_lib, 'device_exists', return_value=False):
+            ip_lib.send_ip_addr_adv_notif(mock.sentinel.ns_name,
+                                          mock.sentinel.iface_name,
+                                          address,
+                                          ARPING_COUNT)
+
+        # should return early with a single call when ENODEV
+        mIPWrapper.assert_has_calls([
+            mock.call(namespace=mock.sentinel.ns_name),
+            mock.call().netns.execute(mock.ANY, extra_ok_codes=mock.ANY)
+        ] * 1)
 
     @mock.patch('eventlet.spawn_n')
     def test_no_ipv6_addr_notif(self, spawn_n):

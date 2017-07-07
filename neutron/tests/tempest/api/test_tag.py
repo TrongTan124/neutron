@@ -19,8 +19,9 @@ from neutron.tests.tempest.api import base
 
 class TagTestJSON(base.BaseAdminNetworkTest):
 
+    required_extensions = ['tag']
+
     @classmethod
-    @test.requires_ext(extension="tag", service="network")
     def resource_setup(cls):
         super(TagTestJSON, cls).resource_setup()
         cls.res_id = cls._create_resource()
@@ -43,6 +44,10 @@ class TagTestJSON(base.BaseAdminNetworkTest):
         # update tag exist
         self.client.update_tag(self.resource, self.res_id, 'red')
         self._get_and_compare_tags(['red', 'blue', 'green'])
+
+        # add a tag with a dot
+        self.client.update_tag(self.resource, self.res_id, 'black.or.white')
+        self._get_and_compare_tags(['red', 'blue', 'green', 'black.or.white'])
 
         # replace tags
         tags = ['red', 'yellow', 'purple']
@@ -150,9 +155,9 @@ class TagRouterTestJSON(TagTestJSON):
 
 class TagFilterTestJSON(base.BaseAdminNetworkTest):
     credentials = ['primary', 'alt', 'admin']
+    required_extensions = ['tag']
 
     @classmethod
-    @test.requires_ext(extension="tag", service="network")
     def resource_setup(cls):
         super(TagFilterTestJSON, cls).resource_setup()
 
@@ -172,7 +177,7 @@ class TagFilterTestJSON(base.BaseAdminNetworkTest):
     @classmethod
     def setup_clients(cls):
         super(TagFilterTestJSON, cls).setup_clients()
-        cls.client = cls.alt_manager.network_client
+        cls.client = cls.os_alt.network_client
 
     def _assertEqualResources(self, expected, res):
         actual = [n['name'] for n in res if n['name'].startswith('tag-res')]
@@ -319,10 +324,7 @@ class TagFilterRouterTestJSON(TagFilterTestJSON):
 
 class UpdateTagsTest(base.BaseAdminNetworkTest):
 
-    @classmethod
-    @test.requires_ext(extension="tag", service="network")
-    def resource_setup(cls):
-        super(UpdateTagsTest, cls).resource_setup()
+    required_extensions = ['tag']
 
     def _get_and_compare_tags(self, tags, res_id):
         # nothing specific about networks here, just a resource that is

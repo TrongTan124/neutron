@@ -30,7 +30,7 @@ import tenacity
 from neutron._i18n import _, _LE, _LI, _LW
 from neutron.agent.common import ip_lib
 from neutron.agent.common import utils
-from neutron.agent.ovsdb import api as ovsdb
+from neutron.agent.ovsdb import api as ovsdb_api
 from neutron.conf.agent import ovs_conf
 from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2.drivers.openvswitch.agent.common \
@@ -57,6 +57,10 @@ OVS_DEFAULT_CAPS = {
     'datapath_types': [],
     'iface_types': [],
 }
+
+# It's default queue, all packets not tagged with 'set_queue' will go through
+# this one
+QOS_DEFAULT_QUEUE = 0
 
 _SENTINEL = object()
 
@@ -106,7 +110,7 @@ class BaseOVS(object):
 
     def __init__(self):
         self.vsctl_timeout = cfg.CONF.ovs_vsctl_timeout
-        self.ovsdb = ovsdb.API.get(self)
+        self.ovsdb = ovsdb_api.from_config(self)
 
     def add_manager(self, connection_uri, timeout=_SENTINEL):
         """Have ovsdb-server listen for manager connections
@@ -307,18 +311,28 @@ class OVSBridge(BaseOVS):
         self.run_ofctl("del-flows", [])
 
     @_ovsdb_retry
-    def _get_port_ofport(self, port_name):
-        return self.db_get_val("Interface", port_name, "ofport")
+    def _get_port_val(self, port_name, port_val):
+        return self.db_get_val("Interface", port_name, port_val)
 
     def get_port_ofport(self, port_name):
         """Get the port's assigned ofport, retrying if not yet assigned."""
         ofport = INVALID_OFPORT
         try:
-            ofport = self._get_port_ofport(port_name)
+            ofport = self._get_port_val(port_name, "ofport")
         except tenacity.RetryError:
             LOG.exception(_LE("Timed out retrieving ofport on port %s."),
                           port_name)
         return ofport
+
+    def get_port_external_ids(self, port_name):
+        """Get the port's assigned ofport, retrying if not yet assigned."""
+        port_external_ids = dict()
+        try:
+            port_external_ids = self._get_port_val(port_name, "external_ids")
+        except tenacity.RetryError:
+            LOG.exception(_LE("Timed out retrieving external_ids on port %s."),
+                          port_name)
+        return port_external_ids
 
     def get_port_mac(self, port_name):
         """Get the port's mac address.
@@ -343,6 +357,10 @@ class OVSBridge(BaseOVS):
             raise RuntimeError('No datapath_id on bridge %s' % self.br_name)
 
     def do_action_flows(self, action, kwargs_list):
+        # we can't mix strict and non-strict, so we'll use the first kw
+        # and check against other kw being different
+        strict = kwargs_list[0].get('strict', False)
+
         for kw in kwargs_list:
             if action is 'del':
                 if kw.get('cookie') == COOKIE_ANY:
@@ -362,14 +380,27 @@ class OVSBridge(BaseOVS):
                 if 'cookie' not in kw:
                     kw['cookie'] = self._default_cookie
 
+            if action in ('mod', 'del'):
+                if kw.pop('strict', False) != strict:
+                    msg = ("cannot mix 'strict' and not 'strict' in a batch "
+                           "call")
+                    raise exceptions.InvalidInput(error_message=msg)
+            else:
+                if kw.pop('strict', False):
+                    msg = "cannot use 'strict' with 'add' action"
+                    raise exceptions.InvalidInput(error_message=msg)
+
+        strict_param = ["--strict"] if strict else []
+
         if action == 'del' and {} in kwargs_list:
             # the 'del' case simplifies itself if kwargs_list has at least
             # one item that matches everything
             self.run_ofctl('%s-flows' % action, [])
         else:
-            flow_strs = [_build_flow_expr_str(kw, action)
+            flow_strs = [_build_flow_expr_str(kw, action, strict)
                          for kw in kwargs_list]
-            self.run_ofctl('%s-flows' % action, ['-'], '\n'.join(flow_strs))
+            self.run_ofctl('%s-flows' % action, strict_param + ['-'],
+                           '\n'.join(flow_strs))
 
     def add_flow(self, **kwargs):
         self.do_action_flows('add', [kwargs])
@@ -636,6 +667,101 @@ class OVSBridge(BaseOVS):
         self._set_egress_bw_limit_for_port(
             port_name, 0, 0)
 
+    def _find_qos(self, port_name):
+        qos = self.ovsdb.db_find(
+            'QoS',
+            ('external_ids', '=', {'id': port_name}),
+            columns=['_uuid', 'other_config']).execute(check_error=True)
+        if qos:
+            return qos[0]
+
+    def _find_queue(self, port_name, queue_type):
+        queues = self.ovsdb.db_find(
+            'Queue',
+            ('external_ids', '=', {'id': port_name,
+                                   'queue_type': str(queue_type)}),
+            columns=['_uuid', 'other_config']).execute(check_error=True)
+        if queues:
+            return queues[0]
+
+    def _update_bw_limit_queue(self, txn, port_name, queue_uuid, queue_type,
+                               other_config):
+        if queue_uuid:
+            txn.add(self.ovsdb.db_set(
+                'Queue', queue_uuid,
+                ('other_config', other_config)))
+        else:
+            external_ids = {'id': port_name,
+                            'queue_type': str(queue_type)}
+            queue_uuid = txn.add(
+                self.ovsdb.db_create(
+                    'Queue', external_ids=external_ids,
+                    other_config=other_config))
+        return queue_uuid
+
+    def _update_bw_limit_profile(self, txn, port_name, qos_uuid,
+                                 queue_uuid, queue_type):
+        queues = {queue_type: queue_uuid}
+        if qos_uuid:
+            txn.add(self.ovsdb.db_set(
+                'QoS', qos_uuid, ('queues', queues)))
+        else:
+            external_ids = {'id': port_name}
+            qos_uuid = txn.add(
+                self.ovsdb.db_create(
+                    'QoS', external_ids=external_ids, type='linux-htb',
+                    queues=queues))
+        return qos_uuid
+
+    def update_ingress_bw_limit_for_port(self, port_name, max_kbps,
+                                         max_burst_kbps):
+        max_bw_in_bits = str(max_kbps * 1000)
+        max_burst_in_bits = str(max_burst_kbps * 1000)
+        queue_other_config = {
+            'max-rate': max_bw_in_bits,
+            'burst': max_burst_in_bits,
+        }
+        qos = self._find_qos(port_name)
+        queue = self._find_queue(port_name, QOS_DEFAULT_QUEUE)
+        qos_uuid = qos['_uuid'] if qos else None
+        queue_uuid = queue['_uuid'] if queue else None
+        with self.ovsdb.transaction(check_error=True) as txn:
+            queue_uuid = self._update_bw_limit_queue(
+                txn, port_name, queue_uuid, QOS_DEFAULT_QUEUE,
+                queue_other_config
+            )
+
+            qos_uuid = self._update_bw_limit_profile(
+                txn, port_name, qos_uuid, queue_uuid, QOS_DEFAULT_QUEUE
+            )
+
+            txn.add(self.ovsdb.db_set(
+                'Port', port_name, ('qos', qos_uuid)))
+
+    def get_ingress_bw_limit_for_port(self, port_name):
+        max_kbps = None
+        max_burst_kbit = None
+        res = self._find_queue(port_name, QOS_DEFAULT_QUEUE)
+        if res:
+            other_config = res['other_config']
+            max_bw_in_bits = other_config.get('max-rate')
+            if max_bw_in_bits is not None:
+                max_kbps = int(max_bw_in_bits) / 1000
+            max_burst_in_bits = other_config.get('burst')
+            if max_burst_in_bits is not None:
+                max_burst_kbit = int(max_burst_in_bits) / 1000
+        return max_kbps, max_burst_kbit
+
+    def delete_ingress_bw_limit_for_port(self, port_name):
+        qos = self._find_qos(port_name)
+        queue = self._find_queue(port_name, QOS_DEFAULT_QUEUE)
+        with self.ovsdb.transaction(check_error=True) as txn:
+            txn.add(self.ovsdb.db_clear("Port", port_name, 'qos'))
+            if qos:
+                txn.add(self.ovsdb.db_destroy('QoS', qos['_uuid']))
+            if queue:
+                txn.add(self.ovsdb.db_destroy('Queue', queue['_uuid']))
+
     def __enter__(self):
         self.create()
         return self
@@ -715,7 +841,7 @@ class DeferredOVSBridge(object):
                           self.br.br_name)
 
 
-def _build_flow_expr_str(flow_dict, cmd):
+def _build_flow_expr_str(flow_dict, cmd, strict):
     flow_expr_arr = []
     actions = None
 
@@ -727,8 +853,10 @@ def _build_flow_expr_str(flow_dict, cmd):
         flow_expr_arr.append("priority=%s" %
                              flow_dict.pop('priority', '1'))
     elif 'priority' in flow_dict:
-        msg = _("Cannot match priority on flow deletion or modification")
-        raise exceptions.InvalidInput(error_message=msg)
+        if not strict:
+            msg = _("Cannot match priority on flow deletion or modification "
+                    "without 'strict'")
+            raise exceptions.InvalidInput(error_message=msg)
 
     if cmd != 'del':
         if "actions" not in flow_dict:
@@ -737,7 +865,7 @@ def _build_flow_expr_str(flow_dict, cmd):
             raise exceptions.InvalidInput(error_message=msg)
         actions = "actions=%s" % flow_dict.pop('actions')
 
-    for key, value in six.iteritems(flow_dict):
+    for key, value in flow_dict.items():
         if key == 'proto':
             flow_expr_arr.append(value)
         else:

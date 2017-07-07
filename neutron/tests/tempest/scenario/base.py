@@ -17,12 +17,12 @@ import netaddr
 from oslo_log import log
 
 from tempest.common import waiters
-from tempest.lib.common import ssh
 from tempest.lib.common.utils import data_utils
 from tempest.lib.common.utils import test_utils
 from tempest.lib import exceptions as lib_exc
 
 from neutron.tests.tempest.api import base as base_api
+from neutron.tests.tempest.common import ssh
 from neutron.tests.tempest import config
 from neutron.tests.tempest.scenario import constants
 
@@ -36,24 +36,17 @@ class BaseTempestTestCase(base_api.BaseNetworkTest):
     def resource_setup(cls):
         super(BaseTempestTestCase, cls).resource_setup()
 
-        cls.servers = []
         cls.keypairs = []
 
     @classmethod
     def resource_cleanup(cls):
-        for server in cls.servers:
-            cls.manager.servers_client.delete_server(server)
-            waiters.wait_for_server_termination(cls.manager.servers_client,
-                                                server)
-
         for keypair in cls.keypairs:
-            cls.manager.keypairs_client.delete_keypair(
+            cls.os_primary.keypairs_client.delete_keypair(
                 keypair_name=keypair['name'])
 
         super(BaseTempestTestCase, cls).resource_cleanup()
 
-    @classmethod
-    def create_server(cls, flavor_ref, image_ref, key_name, networks,
+    def create_server(self, flavor_ref, image_ref, key_name, networks,
                       name=None, security_groups=None):
         """Create a server using tempest lib
         All the parameters are the ones used in Compute API
@@ -78,19 +71,25 @@ class BaseTempestTestCase(base_api.BaseNetworkTest):
         if not security_groups:
             security_groups = [{'name': 'default'}]
 
-        server = cls.manager.servers_client.create_server(
+        server = self.os_primary.servers_client.create_server(
             name=name,
             flavorRef=flavor_ref,
             imageRef=image_ref,
             key_name=key_name,
             networks=networks,
             security_groups=security_groups)
-        cls.servers.append(server['server']['id'])
+
+        self.addCleanup(test_utils.call_and_ignore_notfound_exc,
+            waiters.wait_for_server_termination,
+            self.os_primary.servers_client, server['server']['id'])
+        self.addCleanup(test_utils.call_and_ignore_notfound_exc,
+                        self.os_primary.servers_client.delete_server,
+                        server['server']['id'])
         return server
 
     @classmethod
     def create_keypair(cls, client=None):
-        client = client or cls.manager.keypairs_client
+        client = client or cls.os_primary.keypairs_client
         name = data_utils.rand_name('keypair-test')
         body = client.create_keypair(name=name)
         cls.keypairs.append(body['keypair'])
@@ -98,7 +97,7 @@ class BaseTempestTestCase(base_api.BaseNetworkTest):
 
     @classmethod
     def create_secgroup_rules(cls, rule_list, secgroup_id=None):
-        client = cls.manager.network_client
+        client = cls.os_primary.network_client
         if not secgroup_id:
             sgs = client.list_security_groups()['security_groups']
             for sg in sgs:
@@ -155,50 +154,48 @@ class BaseTempestTestCase(base_api.BaseNetworkTest):
         cls.routers.append(router)
         return router
 
-    @classmethod
-    def create_and_associate_floatingip(cls, port_id):
-        fip = cls.manager.network_client.create_floatingip(
+    def create_and_associate_floatingip(self, port_id):
+        fip = self.os_primary.network_client.create_floatingip(
             CONF.network.public_network_id,
             port_id=port_id)['floatingip']
-        cls.floating_ips.append(fip)
+        self.floating_ips.append(fip)
         return fip
 
-    @classmethod
-    def setup_network_and_server(cls, router=None, **kwargs):
+    def setup_network_and_server(self, router=None, **kwargs):
         """Create network resources and a server.
 
         Creating a network, subnet, router, keypair, security group
         and a server.
         """
-        cls.network = cls.create_network()
-        LOG.debug("Created network %s", cls.network['name'])
-        cls.subnet = cls.create_subnet(cls.network)
-        LOG.debug("Created subnet %s", cls.subnet['id'])
+        self.network = self.create_network()
+        LOG.debug("Created network %s", self.network['name'])
+        self.subnet = self.create_subnet(self.network)
+        LOG.debug("Created subnet %s", self.subnet['id'])
 
-        secgroup = cls.manager.network_client.create_security_group(
+        secgroup = self.os_primary.network_client.create_security_group(
             name=data_utils.rand_name('secgroup-'))
         LOG.debug("Created security group %s",
                   secgroup['security_group']['name'])
-        cls.security_groups.append(secgroup['security_group'])
+        self.security_groups.append(secgroup['security_group'])
         if not router:
-            router = cls.create_router_by_client(**kwargs)
-        cls.create_router_interface(router['id'], cls.subnet['id'])
-        cls.keypair = cls.create_keypair()
-        cls.create_loginable_secgroup_rule(
+            router = self.create_router_by_client(**kwargs)
+        self.create_router_interface(router['id'], self.subnet['id'])
+        self.keypair = self.create_keypair()
+        self.create_loginable_secgroup_rule(
             secgroup_id=secgroup['security_group']['id'])
-        cls.server = cls.create_server(
+        self.server = self.create_server(
             flavor_ref=CONF.compute.flavor_ref,
             image_ref=CONF.compute.image_ref,
-            key_name=cls.keypair['name'],
-            networks=[{'uuid': cls.network['id']}],
+            key_name=self.keypair['name'],
+            networks=[{'uuid': self.network['id']}],
             security_groups=[{'name': secgroup['security_group']['name']}])
-        waiters.wait_for_server_status(cls.manager.servers_client,
-                                       cls.server['server']['id'],
+        waiters.wait_for_server_status(self.os_primary.servers_client,
+                                       self.server['server']['id'],
                                        constants.SERVER_STATUS_ACTIVE)
-        port = cls.client.list_ports(network_id=cls.network['id'],
-                                     device_id=cls.server[
+        port = self.client.list_ports(network_id=self.network['id'],
+                                     device_id=self.server[
                                           'server']['id'])['ports'][0]
-        cls.fip = cls.create_and_associate_floatingip(port['id'])
+        self.fip = self.create_and_associate_floatingip(port['id'])
 
     def check_connectivity(self, host, ssh_user, ssh_key, servers=None):
         ssh_client = ssh.Client(host, ssh_user, pkey=ssh_key)
@@ -214,12 +211,12 @@ class BaseTempestTestCase(base_api.BaseNetworkTest):
             LOG.debug('Console output not supported, cannot log')
             return
         if not servers:
-            servers = self.manager.servers_client.list_servers()
+            servers = self.os_primary.servers_client.list_servers()
             servers = servers['servers']
         for server in servers:
             try:
                 console_output = (
-                    self.manager.servers_client.get_console_output(
+                    self.os_primary.servers_client.get_console_output(
                         server['id'])['output'])
                 LOG.debug('Console output for %s\nbody=\n%s',
                           server['id'], console_output)

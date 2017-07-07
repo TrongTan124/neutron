@@ -20,6 +20,7 @@
       '''''''  Heading 4
       (Avoid deeper levels because they do not render well.)
 
+.. _testing_neutron:
 
 Testing Neutron
 ===============
@@ -49,17 +50,17 @@ We will talk about three classes of tests: unit, functional and integration.
 Each respective category typically targets a larger scope of code. Other than
 that broad categorization, here are a few more characteristic:
 
-  * Unit tests - Should be able to run on your laptop, directly following a
-    'git clone' of the project. The underlying system must not be mutated,
-    mocks can be used to achieve this. A unit test typically targets a function
-    or class.
-  * Functional tests - Run against a pre-configured environment
-    (tools/configure_for_func_testing.sh). Typically test a component
-    such as an agent using no mocks.
-  * Integration tests - Run against a running cloud, often target the API level,
-    but also 'scenarios' or 'user stories'. You may find such tests under
-    tests/tempest/api, tests/tempest/scenario, tests/fullstack, and in the
-    Tempest and Rally projects.
+* Unit tests - Should be able to run on your laptop, directly following a
+  'git clone' of the project. The underlying system must not be mutated,
+  mocks can be used to achieve this. A unit test typically targets a function
+  or class.
+* Functional tests - Run against a pre-configured environment
+  (tools/configure_for_func_testing.sh). Typically test a component
+  such as an agent using no mocks.
+* Integration tests - Run against a running cloud, often target the API level,
+  but also 'scenarios' or 'user stories'. You may find such tests under
+  tests/tempest/api, tests/tempest/scenario, tests/fullstack, and in the
+  Tempest and Rally projects.
 
 Tests in the Neutron tree are typically organized by the testing infrastructure
 used, and not by the scope of the test. For example, many tests under the
@@ -207,14 +208,16 @@ attributes and configures dnsmasq for that network, the test:
   namespace.
 * Assert that the device successfully obtained the expected IP address.
 
-Gate exceptions
+Test exceptions
 +++++++++++++++
 
 Test neutron.tests.functional.agent.test_ovs_flows.OVSFlowTestCase.\
-test_install_flood_to_tun is currently skipped on upstream gate because Ubuntu
-Xenial 16.04 contains openvswitch 2.5.0. This version contains bug where appctl
-command prints wrong output for Final flow. It's been fixed in openvswitch
+test_install_flood_to_tun is currently skipped if openvswitch version is less
+than 2.5.1. This version contains bug where appctl command prints wrong output
+for Final flow. It's been fixed in openvswitch
 2.5.1 in `this commit <https://github.com/openvswitch/ovs/commit/8c0b419a0b9ac0141d6973dcc80306dfc6a83d31>`_.
+If openvswitch version meets the test requirement then the test is triggered
+normally.
 
 Fullstack Tests
 ~~~~~~~~~~~~~~~
@@ -366,6 +369,12 @@ Tests for other resources should be contributed to the Neutron repository.
 Scenario tests should be similarly split up between Tempest and Neutron
 according to the API they're targeting.
 
+To create an API test, the testing class must at least inherit from
+neutron.tests.tempest.api.base.BaseNetworkTest base class. As some of tests
+may require certain extensions to be enabled, the base class provides
+``required_extensions`` class attribute which can be used by subclasses to
+define a list of required extensions for particular test class.
+
 Scenario Tests
 ~~~~~~~~~~~~~~
 
@@ -460,9 +469,7 @@ the tracking of long-running tests and other things.
 
 For more information on the standard Tox-based test infrastructure used by
 OpenStack and how to do some common test/debugging procedures with Testr,
-see this wiki page:
-
-  https://wiki.openstack.org/wiki/Testr
+see this wiki page: https://wiki.openstack.org/wiki/Testr
 
 .. _Testr: https://wiki.openstack.org/wiki/Testr
 .. _tox: http://tox.readthedocs.org/en/latest/
@@ -584,10 +591,10 @@ doc/source/devref/testing_coverage.rst. You could also rely on Zuul
 logs, that are generated post-merge (not every project builds coverage
 results). To access them, do the following:
 
-  * Check out the latest `merge commit <https://review.openstack.org/gitweb?p=openstack/neutron.git;a=search;s=Jenkins;st=author>`_
-  * Go to: http://logs.openstack.org/<first-2-digits-of-sha1>/<sha1>/post/neutron-coverage/.
-  * `Spec <https://review.openstack.org/#/c/221494/>`_ is a work in progress to
-    provide a better landing page.
+* Check out the latest `merge commit <https://review.openstack.org/gitweb?p=openstack/neutron.git;a=search;s=Jenkins;st=author>`_
+* Go to: http://logs.openstack.org/<first-2-digits-of-sha1>/<sha1>/post/neutron-coverage/.
+* `Spec <https://review.openstack.org/#/c/221494/>`_ is a work in progress to
+  provide a better landing page.
 
 Debugging
 ---------
@@ -624,6 +631,4 @@ TBD: how to do this with tox.
 References
 ~~~~~~~~~~
 
-.. [#pudb] PUDB debugger:
-   https://pypi.python.org/pypi/pudb
 .. _file-based-sqlite: http://lists.openstack.org/pipermail/openstack-dev/2016-July/099861.html

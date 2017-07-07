@@ -14,7 +14,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import registry
+from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import exceptions as n_exc
 from neutron_lib.plugins import directory
@@ -22,13 +24,9 @@ from oslo_db import exception as db_exc
 from oslo_log import helpers as log_helpers
 from oslo_utils import uuidutils
 
-from neutron.callbacks import events
-from neutron.callbacks import registry
-from neutron.callbacks import resources
 from neutron.db import _utils as db_utils
 from neutron.db import api as db_api
 from neutron.db import common_db_mixin
-from neutron.db.models import segment as segment_model
 from neutron.db import segments_db as db
 from neutron.extensions import segment as extension
 from neutron import manager
@@ -116,6 +114,9 @@ class SegmentDbMixin(common_db_mixin.CommonDbMixin):
             registry.notify(
                 resources.SEGMENT, events.PRECOMMIT_CREATE, self,
                 context=context, segment=new_segment)
+            # The new segment might have been updated by the callbacks
+            # subscribed to the PRECOMMIT_CREATE event. So update it in the DB
+            new_segment.update()
             return new_segment
 
     @log_helpers.log_method_call
@@ -167,9 +168,7 @@ class SegmentDbMixin(common_db_mixin.CommonDbMixin):
 
         # Delete segment in DB
         with db_api.context_manager.writer.using(context):
-            query = self._model_query(context, segment_model.NetworkSegment)
-            query = query.filter(segment_model.NetworkSegment.id == uuid)
-            if 0 == query.delete():
+            if not network.NetworkSegment.delete_objects(context, id=uuid):
                 raise exceptions.SegmentNotFound(segment_id=uuid)
             # Do some preliminary operations before deleting segment in db
             registry.notify(resources.SEGMENT, events.PRECOMMIT_DELETE,

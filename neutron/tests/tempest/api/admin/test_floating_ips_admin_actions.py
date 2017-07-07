@@ -34,7 +34,7 @@ class FloatingIPAdminTestJSON(base.BaseAdminNetworkTest):
         super(FloatingIPAdminTestJSON, cls).resource_setup()
         cls.ext_net_id = CONF.network.public_network_id
         cls.floating_ip = cls.create_floatingip(cls.ext_net_id)
-        cls.alt_client = cls.alt_manager.network_client
+        cls.alt_client = cls.os_alt.network_client
         cls.network = cls.create_network()
         cls.subnet = cls.create_subnet(cls.network)
         cls.router = cls.create_router(data_utils.rand_name('router-'),
@@ -45,6 +45,9 @@ class FloatingIPAdminTestJSON(base.BaseAdminNetworkTest):
     @test.attr(type='negative')
     @decorators.idempotent_id('11116ee9-4e99-5b15-b8e1-aa7df92ca589')
     def test_associate_floating_ip_with_port_from_another_tenant(self):
+        if not CONF.identity_feature_enabled.api_v2_admin:
+            # TODO(ihrachys) adopt to v3
+            raise self.skipException('Identity v2 admin not available')
         body = self.admin_client.create_floatingip(
             floating_network_id=self.ext_net_id)
         floating_ip = body['floatingip']

@@ -22,6 +22,7 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib.api import validators
 from neutron_lib import constants as const
 from neutron_lib import exceptions as exc
+from neutron_lib.utils import net
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
@@ -33,6 +34,7 @@ from neutron.common import constants
 from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
 from neutron.common import utils as common_utils
+from neutron.db import _model_query as model_query
 from neutron.db import _utils as db_utils
 from neutron.db import api as db_api
 from neutron.db import db_base_plugin_common
@@ -166,16 +168,14 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
 
     @db_api.context_manager.writer
     def _update_subnet_allocation_pools(self, context, subnet_id, s):
-        context.session.query(models_v2.IPAllocationPool).filter_by(
-            subnet_id=subnet_id).delete()
+        subnet_obj.IPAllocationPool.delete_objects(context,
+                                                   subnet_id=subnet_id)
         pools = [(netaddr.IPAddress(p.first, p.version).format(),
                   netaddr.IPAddress(p.last, p.version).format())
                  for p in s['allocation_pools']]
-        new_pools = [models_v2.IPAllocationPool(first_ip=p[0],
-                                                last_ip=p[1],
-                                                subnet_id=subnet_id)
-                     for p in pools]
-        context.session.add_all(new_pools)
+        for p in pools:
+            subnet_obj.IPAllocationPool(context, start=p[0], end=p[1],
+                                        subnet_id=subnet_id).create()
 
         # Gather new pools for result
         result_pools = [{'start': p[0], 'end': p[1]} for p in pools]
@@ -319,7 +319,7 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
                         subnet_cidr=subnet_cidr)
 
     def _validate_max_ips_per_port(self, fixed_ip_list, device_owner):
-        if common_utils.is_port_trusted({'device_owner': device_owner}):
+        if net.is_port_trusted({'device_owner': device_owner}):
             return
 
         if len(fixed_ip_list) > cfg.CONF.max_fixed_ips_per_port:
@@ -591,7 +591,7 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
         return fixed_ip_list
 
     def _query_subnets_on_network(self, context, network_id):
-        query = self._get_collection_query(context, models_v2.Subnet)
+        query = model_query.get_collection_query(context, models_v2.Subnet)
         return query.filter(models_v2.Subnet.network_id == network_id)
 
     def _query_filter_service_subnets(self, query, service_type):
@@ -657,14 +657,15 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
         # implementations.
         return host and validators.is_attr_set(host)
 
-    def _ipam_get_subnets(self, context, network_id, host, service_type=None):
+    def _ipam_get_subnets(self, context, network_id, host, service_type=None,
+                          fixed_configured=False):
         """Return eligible subnets
 
         If no eligible subnets are found, determine why and potentially raise
         an appropriate error.
         """
-        subnets = self._find_candidate_subnets(
-            context, network_id, host, service_type)
+        subnets = self._find_candidate_subnets(context, network_id, host,
+                                               service_type, fixed_configured)
         if subnets:
             subnet_dicts = [self._make_subnet_dict(subnet, context=context)
                             for subnet in subnets]
@@ -697,13 +698,20 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
 
         raise ipam_exceptions.IpAddressGenerationFailureNoMatchingSubnet()
 
-    def _find_candidate_subnets(self, context, network_id, host, service_type):
+    def _find_candidate_subnets(self, context, network_id, host, service_type,
+                                fixed_configured):
         """Find canditate subnets for the network, host, and service_type"""
         query = self._query_subnets_on_network(context, network_id)
         query = self._query_filter_service_subnets(query, service_type)
 
         # Select candidate subnets and return them
         if not self.is_host_set(host):
+            if fixed_configured:
+                # If fixed_ips in request and host is not known all subnets on
+                # the network are candidates. Host/Segment will be validated
+                # on port update with binding:host_id set. Allocation _cannot_
+                # be deferred as requested fixed_ips would then be lost.
+                return query.all()
             # If the host isn't known, we can't allocate on a routed network.
             # So, exclude any subnets attached to segments.
             return self._query_exclude_subnets_on_segments(query).all()

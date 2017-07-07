@@ -23,6 +23,7 @@ import importlib
 import os
 import os.path
 import random
+import re
 import signal
 import sys
 import threading
@@ -56,6 +57,8 @@ LOG = logging.getLogger(__name__)
 SYNCHRONIZED_PREFIX = 'neutron-'
 
 DEFAULT_THROTTLER_VALUE = 2
+
+_SEPARATOR_REGEX = re.compile(r'[/\\]+')
 
 synchronized = lockutils.synchronized_with_prefix(SYNCHRONIZED_PREFIX)
 
@@ -275,15 +278,6 @@ def ip_version_from_int(ip_version_int):
     if ip_version_int == 6:
         return n_const.IPv6
     raise ValueError(_('Illegal IP version number'))
-
-
-def is_port_trusted(port):
-    """Used to determine if port can be trusted not to attack network.
-
-    Trust is currently based on the device_owner field starting with 'network:'
-    since we restrict who can use that in the default policy.json file.
-    """
-    return port['device_owner'].startswith(n_const.DEVICE_OWNER_NETWORK_PREFIX)
 
 
 class DelayedStringRenderer(object):
@@ -684,10 +678,10 @@ def wait_until_true(predicate, timeout=60, sleep=1, exception=None):
                       (default) then WaitTimeout exception is raised.
     """
     try:
-        with eventlet.timeout.Timeout(timeout):
+        with eventlet.Timeout(timeout):
             while not predicate():
                 eventlet.sleep(sleep)
-    except eventlet.TimeoutError:
+    except eventlet.Timeout:
         if exception is not None:
             #pylint: disable=raising-bad-type
             raise exception
@@ -759,6 +753,7 @@ def extract_exc_details(e):
 
 def import_modules_recursively(topdir):
     '''Import and return all modules below the topdir directory.'''
+    topdir = _SEPARATOR_REGEX.sub('/', topdir)
     modules = []
     for root, dirs, files in os.walk(topdir):
         for file_ in files:
@@ -769,7 +764,7 @@ def import_modules_recursively(topdir):
             if module == '__init__':
                 continue
 
-            import_base = root.replace('/', '.')
+            import_base = _SEPARATOR_REGEX.sub('.', root)
 
             # NOTE(ihrachys): in Python3, or when we are not located in the
             # directory containing neutron code, __file__ is absolute, so we
@@ -837,3 +832,10 @@ except AttributeError:
 def make_weak_ref(f):
     """Make a weak reference to a function accounting for bound methods."""
     return weak_method(f) if hasattr(f, '__self__') else weakref.ref(f)
+
+
+def resolve_ref(ref):
+    """Handles dereference of weakref."""
+    if isinstance(ref, weakref.ref):
+        ref = ref()
+    return ref

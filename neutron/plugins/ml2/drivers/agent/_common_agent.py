@@ -19,6 +19,9 @@ import contextlib
 import sys
 import time
 
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import registry
+from neutron_lib.callbacks import resources as local_resources
 from neutron_lib import constants
 from neutron_lib import context
 from oslo_config import cfg
@@ -34,9 +37,6 @@ from neutron.agent import rpc as agent_rpc
 from neutron.agent import securitygroups_rpc as agent_sg_rpc
 from neutron.api.rpc.callbacks import resources
 from neutron.api.rpc.handlers import securitygroups_rpc as sg_rpc
-from neutron.callbacks import events
-from neutron.callbacks import registry
-from neutron.callbacks import resources as local_resources
 from neutron.common import config as common_config
 from neutron.common import constants as n_const
 from neutron.common import topics
@@ -245,7 +245,8 @@ class CommonAgentLoop(service.Service):
                 segment = amb.NetworkSegment(
                     device_details.get('network_type'),
                     device_details['physical_network'],
-                    device_details.get('segmentation_id')
+                    device_details.get('segmentation_id'),
+                    device_details.get('mtu')
                 )
                 network_id = device_details['network_id']
                 self.rpc_callbacks.add_network(network_id, segment)
@@ -346,9 +347,14 @@ class CommonAgentLoop(service.Service):
             else:
                 LOG.debug("Device %s not defined on plugin", device)
             port_id = self._clean_network_ports(device)
-            self.ext_manager.delete_port(self.context,
-                                         {'device': device,
-                                          'port_id': port_id})
+            try:
+                self.ext_manager.delete_port(self.context,
+                                             {'device': device,
+                                              'port_id': port_id})
+            except Exception:
+                LOG.exception("Error occurred while processing extensions "
+                              "for port removal %s", device)
+                resync = True
             registry.notify(local_resources.PORT_DEVICE, events.AFTER_DELETE,
                             self, context=self.context, device=device,
                             port_id=port_id)

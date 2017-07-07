@@ -16,6 +16,7 @@ from neutron_lib import context
 from oslo_utils import uuidutils
 
 from neutron.common import constants
+from neutron.common import exceptions
 from neutron.objects import ports as ports_object
 from neutron.objects.qos import rule as rule_object
 from neutron.services.qos.drivers import base as qos_driver_base
@@ -204,3 +205,25 @@ class TestQosDriversManagerRules(TestQosDriversManagerBase):
             }
         })
         self.assertEqual(driver_manager.supported_rule_types, set([]))
+
+
+class TestQosDriversCalls(TestQosDriversManagerBase):
+    """Test QoS driver calls"""
+
+    def setUp(self):
+        super(TestQosDriversCalls, self).setUp()
+        self.driver_manager = self._create_manager_with_drivers(
+            {'driver-A': {'is_loaded': True}})
+
+    def test_implemented_call_methods(self):
+        for method in qos_consts.QOS_CALL_METHODS:
+            with mock.patch.object(qos_driver_base.DriverBase, method) as \
+                    method_fnc:
+                context = mock.Mock()
+                policy = mock.Mock()
+                self.driver_manager.call(method, context, policy)
+                method_fnc.assert_called_once_with(context, policy)
+
+    def test_not_implemented_call_methods(self):
+        self.assertRaises(exceptions.DriverCallError, self.driver_manager.call,
+                          'wrong_method', mock.Mock(), mock.Mock())

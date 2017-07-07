@@ -17,17 +17,19 @@ from tempest.lib import decorators
 from tempest.lib import exceptions
 from tempest import test
 
+import testscenarios
 import testtools
 
 from neutron.services.qos import qos_consts
 from neutron.tests.tempest.api import base
 
 
+load_tests = testscenarios.load_tests_apply_scenarios
+
+
 class QosTestJSON(base.BaseAdminNetworkTest):
-    @classmethod
-    @test.requires_ext(extension="qos", service="network")
-    def resource_setup(cls):
-        super(QosTestJSON, cls).resource_setup()
+
+    required_extensions = ['qos']
 
     @decorators.idempotent_id('108fbdf7-3463-4e47-9871-d07f3dcf5bbb')
     def test_create_policy(self):
@@ -78,7 +80,8 @@ class QosTestJSON(base.BaseAdminNetworkTest):
     def test_policy_update(self):
         policy = self.create_qos_policy(name='test-policy',
                                         description='',
-                                        shared=False)
+                                        shared=False,
+                                        tenant_id=self.admin_client.tenant_id)
         self.admin_client.update_qos_policy(policy['id'],
                                             description='test policy desc2',
                                             shared=True)
@@ -115,7 +118,8 @@ class QosTestJSON(base.BaseAdminNetworkTest):
     def test_shared_policy_update(self):
         policy = self.create_qos_policy(name='test-policy',
                                         description='',
-                                        shared=True)
+                                        shared=True,
+                                        tenant_id=self.admin_client.tenant_id)
 
         self.admin_client.update_qos_policy(policy['id'],
                                             description='test policy desc2')
@@ -152,29 +156,21 @@ class QosTestJSON(base.BaseAdminNetworkTest):
 
     def _test_list_rule_types(self, client):
         # List supported rule types
-        # TODO(QoS): since in gate we run both ovs and linuxbridge ml2 drivers,
-        # and since Linux Bridge ml2 driver does not have QoS support yet, ml2
-        # plugin reports no rule types are supported. Once linuxbridge will
-        # receive support for QoS, the list of expected rule types will change.
+        # Since returned rule types depends on loaded backend drivers this test
+        # is checking only if returned keys are same as expected keys
         #
         # In theory, we could make the test conditional on which ml2 drivers
         # are enabled in gate (or more specifically, on which supported qos
         # rules are claimed by core plugin), but that option doesn't seem to be
         # available through tempest.lib framework
-        expected_rule_types = []
-        expected_rule_details = ['type']
+        expected_rule_keys = ['type']
 
         rule_types = client.list_qos_rule_types()
         actual_list_rule_types = rule_types['rule_types']
-        actual_rule_types = [rule['type'] for rule in actual_list_rule_types]
 
         # Verify that only required fields present in rule details
         for rule in actual_list_rule_types:
-            self.assertEqual(tuple(rule.keys()), tuple(expected_rule_details))
-
-        # Verify if expected rules are present in the actual rules list
-        for rule in expected_rule_types:
-            self.assertIn(rule, actual_rule_types)
+            self.assertEqual(tuple(expected_rule_keys), tuple(rule.keys()))
 
     def _disassociate_network(self, client, network_id):
         updated_network = client.update_network(network_id,
@@ -360,20 +356,34 @@ class QosTestJSON(base.BaseAdminNetworkTest):
 
 
 class QosBandwidthLimitRuleTestJSON(base.BaseAdminNetworkTest):
+
+    direction = None
+    required_extensions = ['qos']
+
     @classmethod
-    @test.requires_ext(extension="qos", service="network")
     @base.require_qos_rule_type(qos_consts.RULE_TYPE_BANDWIDTH_LIMIT)
     def resource_setup(cls):
         super(QosBandwidthLimitRuleTestJSON, cls).resource_setup()
+
+    @property
+    def opposite_direction(self):
+        if self.direction == "ingress":
+            return "egress"
+        elif self.direction == "egress":
+            return "ingress"
+        else:
+            return None
 
     @decorators.idempotent_id('8a59b00b-3e9c-4787-92f8-93a5cdf5e378')
     def test_rule_create(self):
         policy = self.create_qos_policy(name='test-policy',
                                         description='test policy',
                                         shared=False)
-        rule = self.create_qos_bandwidth_limit_rule(policy_id=policy['id'],
-                                                    max_kbps=200,
-                                                    max_burst_kbps=1337)
+        rule = self.create_qos_bandwidth_limit_rule(
+            policy_id=policy['id'],
+            max_kbps=200,
+            max_burst_kbps=1337,
+            direction=self.direction)
 
         # Test 'show rule'
         retrieved_rule = self.admin_client.show_bandwidth_limit_rule(
@@ -382,6 +392,8 @@ class QosBandwidthLimitRuleTestJSON(base.BaseAdminNetworkTest):
         self.assertEqual(rule['id'], retrieved_rule['id'])
         self.assertEqual(200, retrieved_rule['max_kbps'])
         self.assertEqual(1337, retrieved_rule['max_burst_kbps'])
+        if self.direction:
+            self.assertEqual(self.direction, retrieved_rule['direction'])
 
         # Test 'list rules'
         rules = self.admin_client.list_bandwidth_limit_rules(policy['id'])
@@ -404,12 +416,14 @@ class QosBandwidthLimitRuleTestJSON(base.BaseAdminNetworkTest):
                                         shared=False)
         self.create_qos_bandwidth_limit_rule(policy_id=policy['id'],
                                              max_kbps=200,
-                                             max_burst_kbps=1337)
+                                             max_burst_kbps=1337,
+                                             direction=self.direction)
 
         self.assertRaises(exceptions.Conflict,
                           self.create_qos_bandwidth_limit_rule,
                           policy_id=policy['id'],
-                          max_kbps=201, max_burst_kbps=1338)
+                          max_kbps=201, max_burst_kbps=1338,
+                          direction=self.direction)
 
     @decorators.idempotent_id('149a6988-2568-47d2-931e-2dbc858943b3')
     def test_rule_update(self):
@@ -418,18 +432,24 @@ class QosBandwidthLimitRuleTestJSON(base.BaseAdminNetworkTest):
                                         shared=False)
         rule = self.create_qos_bandwidth_limit_rule(policy_id=policy['id'],
                                                     max_kbps=1,
-                                                    max_burst_kbps=1)
+                                                    max_burst_kbps=1,
+                                                    direction=self.direction)
 
-        self.admin_client.update_bandwidth_limit_rule(policy['id'],
-                                                      rule['id'],
-                                                      max_kbps=200,
-                                                      max_burst_kbps=1337)
+        self.admin_client.update_bandwidth_limit_rule(
+            policy['id'],
+            rule['id'],
+            max_kbps=200,
+            max_burst_kbps=1337,
+            direction=self.opposite_direction)
 
         retrieved_policy = self.admin_client.show_bandwidth_limit_rule(
             policy['id'], rule['id'])
         retrieved_policy = retrieved_policy['bandwidth_limit_rule']
         self.assertEqual(200, retrieved_policy['max_kbps'])
         self.assertEqual(1337, retrieved_policy['max_burst_kbps'])
+        if self.opposite_direction:
+            self.assertEqual(self.opposite_direction,
+                             retrieved_policy['direction'])
 
     @decorators.idempotent_id('67ee6efd-7b33-4a68-927d-275b4f8ba958')
     def test_rule_delete(self):
@@ -437,7 +457,7 @@ class QosBandwidthLimitRuleTestJSON(base.BaseAdminNetworkTest):
                                         description='test policy',
                                         shared=False)
         rule = self.admin_client.create_bandwidth_limit_rule(
-            policy['id'], 200, 1337)['bandwidth_limit_rule']
+            policy['id'], 200, 1337, self.direction)['bandwidth_limit_rule']
 
         retrieved_policy = self.admin_client.show_bandwidth_limit_rule(
             policy['id'], rule['id'])
@@ -454,14 +474,14 @@ class QosBandwidthLimitRuleTestJSON(base.BaseAdminNetworkTest):
         self.assertRaises(
             exceptions.NotFound,
             self.create_qos_bandwidth_limit_rule,
-            'policy', 200, 1337)
+            'policy', 200, 1337, self.direction)
 
     @decorators.idempotent_id('a4a2e7ad-786f-4927-a85a-e545a93bd274')
     def test_rule_create_forbidden_for_regular_tenants(self):
         self.assertRaises(
             exceptions.Forbidden,
             self.client.create_bandwidth_limit_rule,
-            'policy', 1, 2)
+            'policy', 1, 2, self.direction)
 
     @decorators.idempotent_id('1bfc55d9-6fd8-4293-ab3a-b1d69bf7cd2e')
     def test_rule_update_forbidden_for_regular_tenants_own_policy(self):
@@ -471,7 +491,8 @@ class QosBandwidthLimitRuleTestJSON(base.BaseAdminNetworkTest):
                                         tenant_id=self.client.tenant_id)
         rule = self.create_qos_bandwidth_limit_rule(policy_id=policy['id'],
                                                     max_kbps=1,
-                                                    max_burst_kbps=1)
+                                                    max_burst_kbps=1,
+                                                    direction=self.direction)
         self.assertRaises(
             exceptions.Forbidden,
             self.client.update_bandwidth_limit_rule,
@@ -485,7 +506,8 @@ class QosBandwidthLimitRuleTestJSON(base.BaseAdminNetworkTest):
                                         tenant_id=self.admin_client.tenant_id)
         rule = self.create_qos_bandwidth_limit_rule(policy_id=policy['id'],
                                                     max_kbps=1,
-                                                    max_burst_kbps=1)
+                                                    max_burst_kbps=1,
+                                                    direction=self.direction)
         self.assertRaises(
             exceptions.NotFound,
             self.client.update_bandwidth_limit_rule,
@@ -498,14 +520,16 @@ class QosBandwidthLimitRuleTestJSON(base.BaseAdminNetworkTest):
                                          shared=False)
         rule1 = self.create_qos_bandwidth_limit_rule(policy_id=policy1['id'],
                                                      max_kbps=200,
-                                                     max_burst_kbps=1337)
+                                                     max_burst_kbps=1337,
+                                                     direction=self.direction)
 
         policy2 = self.create_qos_policy(name='test-policy2',
                                          description='test policy2',
                                          shared=False)
         rule2 = self.create_qos_bandwidth_limit_rule(policy_id=policy2['id'],
                                                      max_kbps=5000,
-                                                     max_burst_kbps=2523)
+                                                     max_burst_kbps=2523,
+                                                     direction=self.direction)
 
         # Test 'list rules'
         rules = self.admin_client.list_bandwidth_limit_rules(policy1['id'])
@@ -515,16 +539,29 @@ class QosBandwidthLimitRuleTestJSON(base.BaseAdminNetworkTest):
         self.assertNotIn(rule2['id'], rules_ids)
 
 
+class QosBandwidthLimitRuleWithDirectionTestJSON(
+    QosBandwidthLimitRuleTestJSON):
+
+    required_extensions = (
+        QosBandwidthLimitRuleTestJSON.required_extensions +
+        ['qos-bw-limit-direction']
+    )
+    scenarios = [
+        ('ingress', {'direction': 'ingress'}),
+        ('egress', {'direction': 'egress'}),
+    ]
+
+
 class RbacSharedQosPoliciesTest(base.BaseAdminNetworkTest):
 
     force_tenant_isolation = True
     credentials = ['primary', 'alt', 'admin']
+    required_extensions = ['qos']
 
     @classmethod
-    @test.requires_ext(extension="qos", service="network")
     def resource_setup(cls):
         super(RbacSharedQosPoliciesTest, cls).resource_setup()
-        cls.client2 = cls.alt_manager.network_client
+        cls.client2 = cls.os_alt.network_client
 
     def _create_qos_policy(self, tenant_id=None):
         args = {'name': data_utils.rand_name('test-policy'),
@@ -560,7 +597,8 @@ class RbacSharedQosPoliciesTest(base.BaseAdminNetworkTest):
     def test_policy_sharing_with_wildcard(self):
         qos_pol = self.create_qos_policy(
             name=data_utils.rand_name('test-policy'),
-            description='test-shared-policy', shared=False)
+            description='test-shared-policy', shared=False,
+            tenant_id=self.admin_client.tenant_id)
         self.assertNotIn(qos_pol, self.client2.list_qos_policies()['policies'])
 
         # test update shared False -> True
@@ -772,8 +810,9 @@ class QosDscpMarkingRuleTestJSON(base.BaseAdminNetworkTest):
     VALID_DSCP_MARK1 = 56
     VALID_DSCP_MARK2 = 48
 
+    required_extensions = ['qos']
+
     @classmethod
-    @test.requires_ext(extension="qos", service="network")
     @base.require_qos_rule_type(qos_consts.RULE_TYPE_DSCP_MARKING)
     def resource_setup(cls):
         super(QosDscpMarkingRuleTestJSON, cls).resource_setup()
@@ -905,9 +944,9 @@ class QosMinimumBandwidthRuleTestJSON(base.BaseAdminNetworkTest):
     DIRECTION_INGRESS = "ingress"
     RULE_NAME = qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH + "_rule"
     RULES_NAME = RULE_NAME + "s"
+    required_extensions = ['qos']
 
     @classmethod
-    @test.requires_ext(extension="qos", service="network")
     @base.require_qos_rule_type(qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH)
     def resource_setup(cls):
         super(QosMinimumBandwidthRuleTestJSON, cls).resource_setup()
@@ -1067,8 +1106,9 @@ class QosSearchCriteriaTest(base.BaseSearchCriteriaTest,
     list_kwargs = {'description': 'search-criteria-test'}
     list_as_admin = True
 
+    required_extensions = ['qos']
+
     @classmethod
-    @test.requires_ext(extension="qos", service="network")
     def resource_setup(cls):
         super(QosSearchCriteriaTest, cls).resource_setup()
         for name in cls.resource_names:

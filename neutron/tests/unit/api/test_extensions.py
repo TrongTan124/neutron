@@ -17,7 +17,7 @@ import copy
 
 import fixtures
 import mock
-from neutron_lib import constants as lib_const
+from neutron_lib.plugins import constants as lib_const
 from neutron_lib.plugins import directory
 from neutron_lib.services import base as service_base
 from oslo_config import cfg
@@ -106,6 +106,8 @@ class ExtensionPathTest(base.BaseTestCase):
         super(ExtensionPathTest, self).setUp()
 
     def test_get_extensions_path_with_plugins(self):
+        cfg.CONF.set_override('api_extensions_path',
+                              'neutron/tests/unit/extensions')
         path = extensions.get_extensions_path(
             {lib_const.CORE: FakePluginWithExtension()})
         self.assertEqual(path,
@@ -185,7 +187,7 @@ class ResourceExtensionTest(base.BaseTestCase):
         try:
             test_app.get("/tweedles/some_id/notimplemented_function")
             # Shouldn't be reached
-            self.assertTrue(False)
+            self.fail()
         except webtest.AppError as e:
             self.assertIn('501', str(e))
 

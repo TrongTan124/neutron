@@ -14,11 +14,14 @@
 
 import functools
 
+from neutron_lib.api.definitions import network as net_def
+from neutron_lib.api.definitions import port as port_def
+from neutron_lib.api.definitions import subnet as subnet_def
+from neutron_lib.api.definitions import subnetpool as subnetpool_def
 from neutron_lib.plugins import directory
 from oslo_log import helpers as log_helpers
 from sqlalchemy.orm import exc
 
-from neutron.api.v2 import attributes
 from neutron.db import _model_query as model_query
 from neutron.db import _resource_extend as resource_extend
 from neutron.db import api as db_api
@@ -36,21 +39,15 @@ from neutron.objects import tag as tag_obj
 resource_model_map = {
     # When we'll add other resources, we must add new extension for them
     # if we don't have better discovery mechanism instead of it.
-    attributes.NETWORKS: models_v2.Network,
-    attributes.SUBNETS: models_v2.Subnet,
-    attributes.PORTS: models_v2.Port,
-    attributes.SUBNETPOOLS: models_v2.SubnetPool,
+    net_def.COLLECTION_NAME: models_v2.Network,
+    subnet_def.COLLECTION_NAME: models_v2.Subnet,
+    port_def.COLLECTION_NAME: models_v2.Port,
+    subnetpool_def.COLLECTION_NAME: models_v2.SubnetPool,
     l3_ext.ROUTERS: l3_model.Router,
 }
 
 
-def _extend_tags_dict(plugin, response_data, db_data):
-    if not directory.get_plugin(tag_ext.TAG_PLUGIN_TYPE):
-        return
-    tags = [tag_db.tag for tag_db in db_data.standard_attr.tags]
-    response_data['tags'] = tags
-
-
+@resource_extend.has_resource_extenders
 class TagPlugin(common_db_mixin.CommonDbMixin, tag_ext.TagPluginBase):
     """Implementation of the Neutron Tag Service Plugin."""
 
@@ -59,8 +56,7 @@ class TagPlugin(common_db_mixin.CommonDbMixin, tag_ext.TagPluginBase):
     def __new__(cls, *args, **kwargs):
         inst = super(TagPlugin, cls).__new__(cls, *args, **kwargs)
         inst._filter_methods = []  # prevent GC of our partial functions
-        for resource, model in resource_model_map.items():
-            resource_extend.register_funcs(resource, [_extend_tags_dict])
+        for model in resource_model_map.values():
             method = functools.partial(tag_methods.apply_tag_filters, model)
             inst._filter_methods.append(method)
             model_query.register_hook(model, "tag",
@@ -69,10 +65,18 @@ class TagPlugin(common_db_mixin.CommonDbMixin, tag_ext.TagPluginBase):
                                       result_filters=method)
         return inst
 
+    @staticmethod
+    @resource_extend.extends(list(resource_model_map))
+    def _extend_tags_dict(response_data, db_data):
+        if not directory.get_plugin(tag_ext.TAG_PLUGIN_TYPE):
+            return
+        tags = [tag_db.tag for tag_db in db_data.standard_attr.tags]
+        response_data['tags'] = tags
+
     def _get_resource(self, context, resource, resource_id):
         model = resource_model_map[resource]
         try:
-            return self._get_by_id(context, model, resource_id)
+            return model_query.get_by_id(context, model, resource_id)
         except exc.NoResultFound:
             raise tag_ext.TagResourceNotFound(resource=resource,
                                               resource_id=resource_id)

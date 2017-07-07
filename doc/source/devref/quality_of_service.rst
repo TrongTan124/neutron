@@ -52,8 +52,9 @@ Service side design
 * neutron.services.qos.drivers.base:
   the interface class for pluggable QoS drivers that are used to update
   backends about new {create, update, delete} events on any rule or policy
-  change. The drivers also declare which QoS rules, VIF drivers and VNIC
-  types are supported.
+  change, including precommit events that some backends could need for
+  synchronization reason. The drivers also declare which QoS rules,
+  VIF drivers and VNIC types are supported.
 
 * neutron.core_extensions.base:
   Contains an interface class to implement core resource (port/network)
@@ -128,11 +129,18 @@ overridden. In the future we may want to have a flag in QoSNetworkPolicyBinding
 or QosRule to enforce such type of application (for example when limiting all
 the ingress of routers devices on an external network automatically).
 
+Each project can have at most one default QoS policy, although is not
+mandatory. If a default QoS policy is defined, all new networks created within
+this project will have assigned this policy, as long as no other QoS policy is
+explicitly attached during the creation process. If the default QoS policy is
+unset, no change to existing networks will be made.
+
 From database point of view, following objects are defined in schema:
 
 * QosPolicy: directly maps to the conceptual policy resource.
 * QosNetworkPolicyBinding, QosPortPolicyBinding: defines attachment between a
   Neutron resource and a QoS policy.
+* QosPolicyDefault: defines a default QoS policy per project.
 * QosBandwidthLimitRule: defines the rule to limit the maximum egress
   bandwidth.
 * QosDscpMarkingRule: defines the rule that marks the Differentiated Service
@@ -151,8 +159,10 @@ QoS versioned objects
 For QoS, the following neutron objects are implemented:
 
 * QosPolicy: directly maps to the conceptual policy resource, as defined above.
-* QosBandwidthLimitRule: defines the instance-egress bandwidth limit rule
-  type, characterized by a max kbps and a max burst kbits.
+* QosPolicyDefault: defines a default QoS policy per project.
+* QosBandwidthLimitRule: defines the instance bandwidth limit rule type,
+  characterized by a max kbps and a max burst kbits. This rule has also a
+  direction parameter to set the traffic direction, from the instance's point of view.
 * QosDscpMarkingRule: defines the DSCP rule type, characterized by an even integer
   between 0 and 56.  These integers are the result of the bits in the DiffServ section
   of the IP header, and only certain configurations are valid.  As a result, the list
@@ -266,6 +276,22 @@ interface:
 * SR-IOV (QosSRIOVAgentDriver);
 * Linux bridge (QosLinuxbridgeAgentDriver).
 
+Table of Neutron backends, supported rules and traffic direction (from the VM
+point of view)
+::
+
+    +----------------------+----------------+----------------+----------------+
+    | Rule \ Backend       | Open vSwitch   | SR-IOV         | Linux Bridge   |
+    +----------------------+----------------+----------------+----------------+
+    | Bandwidth Limit      | Egress/Ingress | Egress (1)     | Egress/Ingress |
+    +----------------------+----------------+----------------+----------------+
+    | Minimum Bandwidth    | -              | Egress         | -              |
+    +----------------------+----------------+----------------+----------------+
+    | DSCP Marking         | Egress         | -              | Egress         |
+    +----------------------+----------------+----------------+----------------+
+
+    (1) Max burst parameter is skipped because it's not supported by ip tool.
+
 
 Open vSwitch
 ++++++++++++
@@ -275,6 +301,9 @@ Open vSwitch implementation relies on the new ovs_lib OVSBridge functions:
 * get_egress_bw_limit_for_port
 * create_egress_bw_limit_for_port
 * delete_egress_bw_limit_for_port
+* get_ingress_bw_limit_for_port
+* update_ingress_bw_limit_for_port
+* delete_ingress_bw_limit_for_port
 
 An egress bandwidth limit is effectively configured on the port by setting
 the port Interface parameters ingress_policing_rate and
@@ -283,6 +312,9 @@ ingress_policing_burst.
 That approach is less flexible than linux-htb, Queues and OvS QoS profiles,
 which we may explore in the future, but which will need to be used in
 combination with openflow rules.
+
+An ingress bandwidth limit is effectively configured on the port by setting
+Queue and OvS QoS profile with linux-htb type for port.
 
 The Open vSwitch DSCP marking implementation relies on the recent addition
 of the ovs_agent_extension_api OVSAgentExtensionAPI to request access to the
@@ -316,11 +348,29 @@ value.
 Linux bridge
 ~~~~~~~~~~~~
 
-The Linux bridge implementation relies on the new tc_lib functions:
+The Linux bridge implementation relies on the new tc_lib functions.
 
-* set_bw_limit
-* update_bw_limit
-* delete_bw_limit
+For egress bandwidth limit rule:
+
+* set_filters_bw_limit
+* update_filters_bw_limit
+* delete_filters_bw_limit
+
+The egress bandwidth limit is configured on the tap port by setting traffic
+policing on tc ingress queueing discipline (qdisc). Details about ingress
+qdisc can be found on `lartc how-to <http://lartc.org/howto/lartc.adv-qdisc.ingress.html>`__.
+The reason why ingress qdisc is used to configure egress bandwidth limit is that
+tc is working on traffic which is visible from "inside bridge" perspective. So
+traffic incoming to bridge via tap interface is in fact outgoing from Neutron's
+port.
+This implementation is the same as what Open vSwitch is doing when
+ingress_policing_rate and ingress_policing_burst are set for port.
+
+For ingress bandwidth limit rule:
+
+* set_tbf_bw_limit
+* update_tbf_bw_limit
+* delete_tbf_bw_limit
 
 The ingress bandwidth limit is configured on the tap port by setting a simple
 `tc-tbf <http://linux.die.net/man/8/tc-tbf>`_ queueing discipline (qdisc) on the

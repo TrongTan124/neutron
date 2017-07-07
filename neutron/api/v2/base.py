@@ -17,19 +17,18 @@ import collections
 import copy
 
 import netaddr
+from neutron_lib.api import attributes
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import registry
 from neutron_lib import exceptions
 from oslo_log import log as logging
 from oslo_policy import policy as oslo_policy
 from oslo_utils import excutils
-import six
 import webob.exc
 
 from neutron._i18n import _, _LE, _LI
 from neutron.api import api_common
-from neutron.api.v2 import attributes
 from neutron.api.v2 import resource as wsgi_resource
-from neutron.callbacks import events
-from neutron.callbacks import registry
 from neutron.common import constants as n_const
 from neutron.common import exceptions as n_exc
 from neutron.common import rpc as n_rpc
@@ -145,7 +144,7 @@ class Controller(object):
                                                          self._resource)
 
     def _get_primary_key(self, default_primary_key='id'):
-        for key, value in six.iteritems(self._attr_info):
+        for key, value in self._attr_info.items():
             if value.get('primary_key', False):
                 return key
         return default_primary_key
@@ -215,7 +214,7 @@ class Controller(object):
     def _filter_attributes(self, data, fields_to_strip=None):
         if not fields_to_strip:
             return data
-        return dict(item for item in six.iteritems(data)
+        return dict(item for item in data.items()
                     if (item[0] not in fields_to_strip))
 
     def _do_field_list(self, original_fields):
@@ -625,7 +624,7 @@ class Controller(object):
         # Load object to check authz
         # but pass only attributes in the original body and required
         # by the policy engine to the policy 'brain'
-        field_list = [name for (name, value) in six.iteritems(self._attr_info)
+        field_list = [name for (name, value) in self._attr_info.items()
                       if (value.get('required_by_policy') or
                           value.get('primary_key') or
                           'default' not in value)]
@@ -716,19 +715,21 @@ class Controller(object):
             msg = _("Unable to find '%s' in request body") % resource
             raise webob.exc.HTTPBadRequest(msg)
 
-        attributes.populate_tenant_id(context, res_dict, attr_info, is_create)
-        attributes.verify_attributes(res_dict, attr_info)
+        attr_ops = attributes.AttributeInfo(attr_info)
+        attr_ops.populate_project_id(context, res_dict, is_create)
+        attributes.populate_project_info(attr_info)
+        attr_ops.verify_attributes(res_dict)
 
         if is_create:  # POST
-            attributes.fill_default_value(attr_info, res_dict,
-                                          webob.exc.HTTPBadRequest)
+            attr_ops.fill_post_defaults(
+                res_dict, exc_cls=webob.exc.HTTPBadRequest)
         else:  # PUT
-            for attr, attr_vals in six.iteritems(attr_info):
+            for attr, attr_vals in attr_info.items():
                 if attr in res_dict and not attr_vals['allow_put']:
                     msg = _("Cannot update read-only attribute %s") % attr
                     raise webob.exc.HTTPBadRequest(msg)
 
-        attributes.convert_value(attr_info, res_dict, webob.exc.HTTPBadRequest)
+        attr_ops.convert_values(res_dict, exc_cls=webob.exc.HTTPBadRequest)
         return body
 
     def _validate_network_tenant_ownership(self, request, resource_item):

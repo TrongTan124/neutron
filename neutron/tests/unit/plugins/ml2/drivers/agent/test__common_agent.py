@@ -15,14 +15,14 @@
 #    under the License.
 
 import mock
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import registry
+from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from oslo_config import cfg
 import testtools
 
 from neutron.agent.linux import bridge_lib
-from neutron.callbacks import events
-from neutron.callbacks import registry
-from neutron.callbacks import resources
 from neutron.common import constants as n_const
 from neutron.plugins.ml2.drivers.agent import _agent_manager_base as amb
 from neutron.plugins.ml2.drivers.agent import _common_agent as ca
@@ -155,6 +155,24 @@ class TestCommonAgentLoop(base.BaseTestCase):
                 mock.patch.object(agent.ext_manager,
                                   "delete_port") as ext_mgr_delete_port:
             fn_udd.side_effect = Exception()
+            resync = agent.treat_devices_removed(devices)
+            self.assertTrue(resync)
+            self.assertTrue(fn_udd.called)
+            self.assertTrue(fn_rdf.called)
+            self.assertTrue(ext_mgr_delete_port.called)
+            self.assertNotIn(PORT_DATA, agent.network_ports[NETWORK_ID])
+
+    def test_treat_devices_removed_failed_extension(self):
+        agent = self.agent
+        devices = [DEVICE_1]
+        agent.network_ports[NETWORK_ID].append(PORT_DATA)
+        with mock.patch.object(agent.plugin_rpc,
+                               "update_device_down") as fn_udd,\
+                mock.patch.object(agent.sg_agent,
+                                  "remove_devices_filter") as fn_rdf,\
+                mock.patch.object(agent.ext_manager,
+                                  "delete_port") as ext_mgr_delete_port:
+            ext_mgr_delete_port.side_effect = Exception()
             resync = agent.treat_devices_removed(devices)
             self.assertTrue(resync)
             self.assertTrue(fn_udd.called)

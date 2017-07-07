@@ -13,11 +13,15 @@
 #    under the License.
 
 import copy
-from keystoneauth1 import exceptions as ks_exc
 
+from keystoneauth1 import exceptions as ks_exc
 import mock
 import netaddr
 from neutron_lib.api.definitions import portbindings
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import exceptions
+from neutron_lib.callbacks import registry
+from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib import exceptions as n_exc
@@ -28,10 +32,6 @@ from oslo_utils import uuidutils
 import webob.exc
 
 from neutron.api.v2 import attributes
-from neutron.callbacks import events
-from neutron.callbacks import exceptions
-from neutron.callbacks import registry
-from neutron.callbacks import resources
 from neutron.common import exceptions as neutron_exc
 from neutron.conf.plugins.ml2.drivers import driver_type
 from neutron.db import agents_db
@@ -82,6 +82,10 @@ class SegmentTestExtensionManager(object):
 class SegmentTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
 
     def setUp(self, plugin=None):
+        # Remove MissingAuthPlugin exception from logs
+        self.patch_notifier = mock.patch(
+            'neutron.notifiers.batch_notifier.BatchNotifier._notify')
+        self.patch_notifier.start()
         if not plugin:
             plugin = TEST_PLUGIN_KLASS
         service_plugins = {'segments_plugin_name': SERVICE_PLUGIN_KLASS}
@@ -876,6 +880,19 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         # Don't allocate IPs in this case because we didn't give binding info
         self.assertEqual(0, len(res['port']['fixed_ips']))
 
+    def test_port_create_fixed_ips_with_segment_subnets_no_binding_info(self):
+        """Fixed IP provided and no binding info, do not defer IP allocation"""
+        network, segment, subnet = self._create_test_segment_with_subnet()
+        response = self._create_port(self.fmt,
+                                     net_id=network['network']['id'],
+                                     tenant_id=network['network']['tenant_id'],
+                                     fixed_ips=[
+                                         {'subnet_id': subnet['subnet']['id']}
+                                     ])
+        res = self.deserialize(self.fmt, response)
+        # We gave fixed_ips, allocate IPs in this case despite no binding info
+        self._validate_immediate_ip_allocation(res['port']['id'])
+
     def _assert_one_ip_in_subnet(self, response, cidr):
         res = self.deserialize(self.fmt, response)
         self.assertEqual(1, len(res['port']['fixed_ips']))
@@ -1407,12 +1424,32 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
 
 
 class TestSegmentAwareIpamML2(TestSegmentAwareIpam):
+
+    VLAN_MIN = 200
+    VLAN_MAX = 209
+
     def setUp(self):
-        config.cfg.CONF.set_override('network_vlan_ranges',
-                                     ['physnet:200:209', 'physnet0:200:209',
-                                      'physnet1:200:209', 'physnet2:200:209'],
-                                     group='ml2_type_vlan')
+        # NOTE(mlavalle): ml2_type_vlan requires to be registered before used.
+        # This piece was refactored and removed from .config, so it causes
+        # a problem, when tests are executed with pdb.
+        # There is no problem when tests are running without debugger.
+        driver_type.register_ml2_drivers_vlan_opts()
+        config.cfg.CONF.set_override(
+            'network_vlan_ranges',
+            ['physnet:%s:%s' % (self.VLAN_MIN, self.VLAN_MAX),
+             'physnet0:%s:%s' % (self.VLAN_MIN, self.VLAN_MAX),
+             'physnet1:%s:%s' % (self.VLAN_MIN, self.VLAN_MAX),
+             'physnet2:%s:%s' % (self.VLAN_MIN, self.VLAN_MAX)],
+            group='ml2_type_vlan')
         super(TestSegmentAwareIpamML2, self).setUp(plugin='ml2')
+
+    def test_segmentation_id_stored_in_db(self):
+        network, segment, subnet = self._create_test_segment_with_subnet()
+        self.assertTrue(self.VLAN_MIN <=
+                        segment['segment']['segmentation_id'] <= self.VLAN_MAX)
+        retrieved_segment = self._show('segments', segment['segment']['id'])
+        self.assertEqual(segment['segment']['segmentation_id'],
+                         retrieved_segment['segment']['segmentation_id'])
 
 
 class TestNovaSegmentNotifier(SegmentAwareIpamTestCase):
@@ -1427,6 +1464,9 @@ class TestNovaSegmentNotifier(SegmentAwareIpamTestCase):
                                       'physnet1:200:209', 'physnet2:200:209'],
                                      group='ml2_type_vlan')
         super(TestNovaSegmentNotifier, self).setUp(plugin='ml2')
+        # Need notifier here
+        self.patch_notifier.stop()
+        self._mock_keystone_auth()
         self.segments_plugin = directory.get_plugin(ext_segment.SEGMENTS)
 
         nova_updater = self.segments_plugin.nova_updater
@@ -1436,6 +1476,15 @@ class TestNovaSegmentNotifier(SegmentAwareIpamTestCase):
         self.mock_n_client = nova_updater.n_client
         self.batch_notifier = nova_updater.batch_notifier
         self.batch_notifier._waiting_to_send = True
+
+    def _mock_keystone_auth(self):
+        # Use to remove MissingAuthPlugin exception when notifier is needed
+        self.mock_load_auth_p = mock.patch(
+            'keystoneauth1.loading.load_auth_from_conf_options')
+        self.mock_load_auth = self.mock_load_auth_p.start()
+        self.mock_request_p = mock.patch(
+            'keystoneauth1.session.Session.request')
+        self.mock_request = self.mock_request_p.start()
 
     def _calculate_inventory_total_and_reserved(self, subnet):
         total = 0
@@ -1719,6 +1768,7 @@ class TestNovaSegmentNotifier(SegmentAwareIpamTestCase):
                                                                   host)
 
     def test_add_host_to_non_existent_segment_aggregate(self):
+        self._mock_keystone_auth()
         db.subscribe()
         network, segment, first_subnet = (
             self._test_first_subnet_association_with_segment())
@@ -1975,6 +2025,7 @@ class TestDhcpAgentSegmentScheduling(HostSegmentMappingTestCase):
 
     _mechanism_drivers = ['openvswitch', 'logger']
     mock_path = 'neutron.services.segments.db.update_segment_host_mapping'
+    block_dhcp_notifier = False
 
     def setUp(self):
         super(TestDhcpAgentSegmentScheduling, self).setUp()
@@ -2079,7 +2130,10 @@ class PlacementAPIClientTestCase(base.DietTestCase):
         placement_client.PlacementAPIClient()
 
         load_auth_mock.assert_called_once_with(cfg.CONF, 'placement')
-        ks_sess_mock.assert_called_once_with(auth=load_auth_mock.return_value)
+        ks_sess_mock.assert_called_once_with(auth=load_auth_mock.return_value,
+                                             cert=None,
+                                             timeout=None,
+                                             verify=True)
 
     def test_create_resource_provider(self):
         expected_payload = 'fake_resource_provider'

@@ -76,6 +76,10 @@ class BaseNetworkTest(test.BaseTestCase):
             raise cls.skipException("Neutron support is required")
         if cls._ip_version == 6 and not CONF.network_feature_enabled.ipv6:
             raise cls.skipException("IPv6 Tests are disabled.")
+        for req_ext in getattr(cls, 'required_extensions', []):
+            if not test.is_extension_enabled(req_ext, 'network'):
+                msg = "%s extension not enabled." % req_ext
+                raise cls.skipException(msg)
 
     @classmethod
     def setup_credentials(cls):
@@ -324,7 +328,7 @@ class BaseNetworkTest(test.BaseTestCase):
         ext_gw_info = {}
         if external_network_id:
             ext_gw_info['network_id'] = external_network_id
-        if enable_snat:
+        if enable_snat is not None:
             ext_gw_info['enable_snat'] = enable_snat
         body = client.create_router(
             router_name, external_gateway_info=ext_gw_info,
@@ -339,7 +343,7 @@ class BaseNetworkTest(test.BaseTestCase):
 
     @classmethod
     def create_admin_router(cls, *args, **kwargs):
-        return cls._create_router_with_client(cls.admin_manager.network_client,
+        return cls._create_router_with_client(cls.os_admin.network_client,
                                               *args, **kwargs)
 
     @classmethod
@@ -374,11 +378,12 @@ class BaseNetworkTest(test.BaseTestCase):
         return qos_policy
 
     @classmethod
-    def create_qos_bandwidth_limit_rule(cls, policy_id,
-                                       max_kbps, max_burst_kbps):
+    def create_qos_bandwidth_limit_rule(cls, policy_id, max_kbps,
+                                        max_burst_kbps,
+                                        direction=constants.EGRESS_DIRECTION):
         """Wrapper utility that returns a test QoS bandwidth limit rule."""
         body = cls.admin_client.create_bandwidth_limit_rule(
-            policy_id, max_kbps, max_burst_kbps)
+            policy_id, max_kbps, max_burst_kbps, direction)
         qos_rule = body['bandwidth_limit_rule']
         cls.qos_rules.append(qos_rule)
         return qos_rule

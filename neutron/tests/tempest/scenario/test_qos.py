@@ -17,15 +17,14 @@ import socket
 import time
 
 from oslo_log import log as logging
-from tempest.lib.common import ssh
 from tempest.lib import decorators
 from tempest.lib import exceptions
 from tempest import test
-import testtools
 
 from neutron.common import utils
 from neutron.services.qos import qos_consts
 from neutron.tests.tempest.api import base as base_api
+from neutron.tests.tempest.common import ssh
 from neutron.tests.tempest import config
 from neutron.tests.tempest.scenario import base
 from neutron.tests.tempest.scenario import constants
@@ -83,7 +82,6 @@ class QoSTest(base.BaseTempestTestCase):
     @classmethod
     @test.requires_ext(extension="qos", service="network")
     @base_api.require_qos_rule_type(qos_consts.RULE_TYPE_BANDWIDTH_LIMIT)
-    @testtools.skip('bug/1662109')
     def resource_setup(cls):
         super(QoSTest, cls).resource_setup()
 
@@ -155,19 +153,19 @@ class QoSTest(base.BaseTempestTestCase):
         ssh_client = ssh.Client(self.fip['floating_ip_address'],
                                 CONF.validation.image_ssh_user,
                                 pkey=self.keypair['private_key'])
-        policy = self.admin_manager.network_client.create_qos_policy(
+        policy = self.os_admin.network_client.create_qos_policy(
                                         name='test-policy',
                                         description='test-qos-policy',
                                         shared=True)
         policy_id = policy['policy']['id']
-        self.admin_manager.network_client.create_bandwidth_limit_rule(
+        self.os_admin.network_client.create_bandwidth_limit_rule(
             policy_id, max_kbps=constants.LIMIT_KILO_BITS_PER_SECOND,
             max_burst_kbps=constants.LIMIT_KILO_BITS_PER_SECOND)
         port = self.client.list_ports(network_id=self.network['id'],
                                       device_id=self.server[
                                       'server']['id'])['ports'][0]
-        self.admin_manager.network_client.update_port(port['id'],
-                                                      qos_policy_id=policy_id)
+        self.os_admin.network_client.update_port(port['id'],
+                                                 qos_policy_id=policy_id)
         self._create_file_for_bw_tests(ssh_client)
         utils.wait_until_true(lambda: self._check_bw(
             ssh_client,

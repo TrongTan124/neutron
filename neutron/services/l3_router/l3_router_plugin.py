@@ -14,6 +14,7 @@
 #    under the License.
 
 from neutron_lib import constants as n_const
+from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.services import base as service_base
 from oslo_config import cfg
 from oslo_log import helpers as log_helpers
@@ -51,6 +52,7 @@ def disable_dvr_extension_by_config(aliases):
             aliases.remove('dvr')
 
 
+@resource_extend.has_resource_extenders
 class L3RouterPlugin(service_base.ServicePluginBase,
                      common_db_mixin.CommonDbMixin,
                      extraroute_db.ExtraRoute_db_mixin,
@@ -115,7 +117,7 @@ class L3RouterPlugin(service_base.ServicePluginBase,
 
     @classmethod
     def get_plugin_type(cls):
-        return n_const.L3
+        return plugin_constants.L3
 
     def get_plugin_description(self):
         """returns string description of the plugin."""
@@ -141,10 +143,7 @@ class L3RouterPlugin(service_base.ServicePluginBase,
             context, floatingip,
             initial_status=n_const.FLOATINGIP_STATUS_DOWN)
 
-
-def add_flavor_id(plugin, router_res, router_db):
-    router_res['flavor_id'] = router_db['flavor_id']
-
-
-resource_extend.register_funcs(
-    l3.ROUTERS, [add_flavor_id])
+    @staticmethod
+    @resource_extend.extends([l3.ROUTERS])
+    def add_flavor_id(router_res, router_db):
+        router_res['flavor_id'] = router_db['flavor_id']
