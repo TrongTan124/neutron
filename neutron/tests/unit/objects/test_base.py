@@ -43,9 +43,11 @@ from neutron.objects import flavor
 from neutron.objects.logapi import event_types
 from neutron.objects import network as net_obj
 from neutron.objects import ports
+from neutron.objects.qos import policy as qos_policy
 from neutron.objects import rbac_db
 from neutron.objects import securitygroup
 from neutron.objects import subnet
+from neutron.objects import utils as obj_utils
 from neutron.tests import base as test_base
 from neutron.tests import tools
 from neutron.tests.unit.db import test_db_base_plugin_v2
@@ -854,6 +856,61 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                 self.context, {'unknown_filter': 'new_value'},
                 validate_filters=False, unknown_filter='value')
 
+    def _prep_string_field(self):
+        self.filter_string_field = None
+        # find the first string field to use as string matching filter
+        for field in self.obj_fields[0]:
+            if isinstance(field, obj_fields.StringField):
+                self.filter_string_field = field
+                break
+
+        if self.filter_string_field is None:
+            self.skipTest('There is no string field in this object')
+
+    def test_get_objects_with_string_matching_filters_contains(self):
+        self._prep_string_field()
+
+        filter_dict_contains = {
+            self.filter_string_field: obj_utils.StringContains(
+                "random_thing")}
+
+        with mock.patch.object(
+                obj_db_api, 'get_objects',
+                side_effect=self.fake_get_objects):
+            res = self._test_class.get_objects(self.context,
+                                               **filter_dict_contains)
+            self.assertEqual([], res)
+
+    def test_get_objects_with_string_matching_filters_starts(self):
+        self._prep_string_field()
+
+        filter_dict_starts = {
+            self.filter_string_field: obj_utils.StringStarts(
+                "random_thing")
+        }
+
+        with mock.patch.object(
+                obj_db_api, 'get_objects',
+                side_effect=self.fake_get_objects):
+            res = self._test_class.get_objects(self.context,
+                                               **filter_dict_starts)
+            self.assertEqual([], res)
+
+    def test_get_objects_with_string_matching_filters_ends(self):
+        self._prep_string_field()
+
+        filter_dict_ends = {
+            self.filter_string_field: obj_utils.StringEnds(
+                "random_thing")
+        }
+
+        with mock.patch.object(
+                obj_db_api, 'get_objects',
+                side_effect=self.fake_get_objects):
+            res = self._test_class.get_objects(self.context,
+                                               **filter_dict_ends)
+            self.assertEqual([], res)
+
     def test_delete_objects(self):
         '''Test that delete_objects calls to underlying db_api.'''
         with mock.patch.object(
@@ -1336,8 +1393,10 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
                         objclass.db_model(**objclass_fields)
                     ]
 
-    def _create_test_network(self, name='test-network1'):
-        _network = net_obj.Network(self.context, name=name)
+    def _create_test_network(self, name='test-network1', network_id=None):
+        network_id = (uuidutils.generate_uuid() if network_id is None
+                      else network_id)
+        _network = net_obj.Network(self.context, name=name, id=network_id)
         _network.create()
         return _network
 
@@ -1465,6 +1524,11 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         service_profile_obj = flavor.ServiceProfile(self.context, **attrs)
         service_profile_obj.create()
         return service_profile_obj.id
+
+    def _create_test_qos_policy(self, **qos_policy_attrs):
+        _qos_policy = qos_policy.QosPolicy(self.context, **qos_policy_attrs)
+        _qos_policy.create()
+        return _qos_policy
 
     def test_get_standard_attr_id(self):
 
